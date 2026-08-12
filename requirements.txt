@@ -1,0 +1,12 @@
+# Gridiron Edge runtime dependencies.
+#
+# Deliberately minimal: the entire data pipeline and model are stdlib-only
+# (csv, sqlite3, math, statistics). No pandas, no numpy. The interpreter that
+# Windows Task Scheduler runs (the python.org build) does not have them
+# installed, and adding that dependency is exactly how a daily job starts
+# failing silently.
+#
+# Install against the SCHEDULED interpreter, not whatever `python` resolves to:
+#   & "$env:LOCALAPPDATA\Programs\Python\Python311\python.exe" -m pip install -r requirements.txt
+requests>=2.28
+flask>=3.0

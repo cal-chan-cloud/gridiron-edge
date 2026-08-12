@@ -1,0 +1,27 @@
+# Upstream files, re-downloaded on demand. ~73MB and entirely regenerable.
+data/cache/
+
+# Built by export_static.py and published as a Pages artifact, not committed.
+# Committing it would add ~5MB to git history every single day.
+docs/
+
+logs/
+*.log
+
+# The database is rebuilt from upstream on every run (~15s) so it is not
+# committed — it is 2.7MB of churning binary, which git stores badly.
+# The ONE piece of state that must survive between runs is the day-over-day ADP
+# history behind the "movers" view, and that is committed as
+# data/adp_history.csv instead: a few hundred KB of text that diffs cleanly.
+*.db
+*.db-wal
+*.db-shm
+
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.env
+.DS_Store
+.vscode/
+.idea/

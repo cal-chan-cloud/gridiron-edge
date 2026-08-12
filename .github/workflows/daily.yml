@@ -1,0 +1,95 @@
+name: Daily data refresh + deploy
+
+# 11:30 UTC ~= 06:30 US Eastern (07:30 during daylight saving). ADP from
+# FantasyFootballCalculator rolls over through the day, so a morning build is
+# current for an evening draft. Adjust the cron if you want it earlier.
+on:
+  schedule:
+    - cron: '30 11 * * *'
+  workflow_dispatch:          # lets you force a rebuild from the Actions tab
+  push:
+    branches: [main]
+    paths-ignore: ['README.md', 'docs/**']
+
+permissions:
+  contents: write             # to commit the refreshed database
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    # Lifted to job level because the `secrets` context is not dependable inside
+    # a step-level `if:`. Checking env.* is the pattern that actually works.
+    env:
+      SITE_PASSPHRASE: ${{ secrets.SITE_PASSPHRASE }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      # The pipeline is stdlib-only, so this is the entire dependency list.
+      # Flask is NOT needed here: the build writes JSON, it does not serve it.
+      - name: Install
+        run: pip install requests
+
+      - name: Fetch upstream data
+        run: python -m data.fetch_all --full
+
+      # Success is data that landed, not a process that exited 0. This fails the
+      # build if ADP is stale, the roster is thin, or the model stops building.
+      - name: Verify freshness
+        run: python -m data.assert_fresh
+
+      - name: Verify the model still adds up
+        run: python export_static.py && python tests.py
+
+      # Optional. Set a repository secret named SITE_PASSPHRASE and the published
+      # data becomes AES-256-GCM ciphertext that the page decrypts in the browser.
+      # Without the secret the site publishes in the clear.
+      #
+      # This is the only real way to protect a Pages site: Pages has no server, so
+      # it cannot check a password. Encrypting the payload means there is nothing
+      # readable to serve rather than something hidden by JavaScript.
+      - name: Encrypt the payload
+        if: env.SITE_PASSPHRASE != ''
+        run: node encrypt_build.js "$SITE_PASSPHRASE"
+
+      - name: Report protection status
+        run: |
+          if [ -f docs/data/manifest.json ]; then
+            echo "::notice::Published ENCRYPTED - a passphrase is required to read the board."
+          else
+            echo "::warning::Published IN THE CLEAR - anyone with the URL can read your board. Set the SITE_PASSPHRASE secret to encrypt it."
+          fi
+
+      # The database itself is disposable - it is rebuilt from upstream in
+      # seconds. The only state that must survive between runs is the
+      # day-over-day ADP history behind the "movers" view, which is a small CSV.
+      - name: Commit ADP history snapshot
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data/adp_history.csv
+          git diff --staged --quiet || git commit -m "data: ADP snapshot $(date -u +%Y-%m-%d)"
+          git push
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: docs
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

@@ -1,0 +1,277 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Gridiron Edge &middot; {{ season }} Fantasy Draft</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="/static/style.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🏈</text></svg>">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand">
+    <span class="logo">🏈</span>
+    <div>
+      <h1>Gridiron Edge</h1>
+      <p class="tagline">{{ season }} draft intelligence</p>
+    </div>
+  </div>
+
+  <div class="settings" id="settings">
+    <label>Scoring
+      <select id="scoring"></select>
+    </label>
+    <label>Teams
+      <input type="number" id="teams" min="4" max="20" value="12">
+    </label>
+    <label>Rounds
+      <input type="number" id="rounds" min="1" max="30" value="16">
+    </label>
+    <label>Budget
+      <input type="number" id="budget" min="10" max="1000" step="10" value="200">
+    </label>
+    <button id="rosterBtn" class="ghost" title="Starting lineup">Roster&nbsp;&#9662;</button>
+  </div>
+
+  <div class="freshness" id="freshness" title="Data refresh status"></div>
+  <button id="themeBtn" class="ghost icon" title="Toggle theme">◐</button>
+</header>
+
+<div class="roster-panel" id="rosterPanel" hidden>
+  <h3>Starting lineup</h3>
+  <div class="roster-grid" id="rosterGrid"></div>
+  <p class="hint">Replacement level &mdash; and therefore every value on this site &mdash;
+     is derived from these slots. Flex is allocated to whichever position actually fills it.</p>
+</div>
+
+<nav class="tabs" id="tabs">
+  <button data-tab="board" class="active">Board</button>
+  <button data-tab="snake">Snake Draft</button>
+  <button data-tab="keeper">Keeper</button>
+  <button data-tab="auction">Auction</button>
+  <button data-tab="intel">Team &amp; Injury Intel</button>
+</nav>
+
+<main>
+
+<!-- ==================================================== BOARD ========= -->
+<section class="tab" id="tab-board">
+  <div class="toolbar">
+    <div class="pos-filter" id="posFilter">
+      <button data-pos="ALL" class="active">All</button>
+      <button data-pos="QB">QB</button><button data-pos="RB">RB</button>
+      <button data-pos="WR">WR</button><button data-pos="TE">TE</button>
+      <button data-pos="K">K</button><button data-pos="DST">DST</button>
+    </div>
+    <input type="search" id="boardSearch" placeholder="Search player or team…  (press /)">
+    <label class="chk"><input type="checkbox" id="hideRisk"> Hide high injury risk</label>
+    <label class="chk"><input type="checkbox" id="hideDrafted" checked> Hide drafted</label>
+    <span class="spacer"></span>
+    <button id="helpBtn" class="ghost" title="What do these columns mean?">? Columns</button>
+    <a id="exportBtn" class="ghost btn-link" download title="Download as CSV for a printout or second screen">Export</a>
+  </div>
+
+  <div class="draft-strip" id="draftStrip" hidden></div>
+
+  <div class="table-wrap">
+    <table class="grid" id="boardTable">
+      <thead><tr>
+        <th data-sort="overall_rank" class="c-rank" title="Overall rank by value over replacement">#</th>
+        <th data-sort="name" class="left">Player</th>
+        <th data-sort="pos_rank" title="Position and rank within it">Pos</th>
+        <th data-sort="tier" title="Players in the same tier are close enough to be interchangeable. The gap BETWEEN tiers is where picks are won.">Tier</th>
+        <th data-sort="points" title="Projected fantasy points for the full season">Proj</th>
+        <th data-sort="ppg" class="c-mid" title="Projected points per game played">PPG</th>
+        <th data-sort="games" class="c-mid" title="Projected games played, from the injury model">G</th>
+        <th data-sort="vorp" title="Value Over Replacement: points above the best player you could get for free at this position. This, not raw points, is what should drive a pick.">VORP</th>
+        <th data-sort="auction_value" title="What this player is worth in your league's auction budget">$</th>
+        <th data-sort="adp" class="c-mid" title="Average draft position across thousands of real drafts">ADP</th>
+        <th data-sort="value_vs_adp" title="Market rank minus model rank. Positive = the room lets him slide past his value.">Edge</th>
+        <th data-sort="bye" class="c-low">Bye</th>
+        <th data-sort="injury_risk" class="c-mid">Risk</th>
+        <th data-sort="breakout" class="c-low" title="Breakout potential: young, ascending role, on a team with vacated volume">Break</th>
+      </tr></thead>
+      <tbody></tbody>
+    </table>
+  </div>
+  <p class="hint" id="boardCount"></p>
+</section>
+
+<!-- ==================================================== SNAKE ========= -->
+<section class="tab" id="tab-snake" hidden>
+  <div class="snake-head">
+    <div class="slot-picker">
+      <span class="label">Your draft slot</span>
+      <div id="slotButtons" class="slots"></div>
+      <label class="chk"><input type="checkbox" id="reversal"> 3rd-round reversal</label>
+    </div>
+    <div class="clock" id="clock"></div>
+  </div>
+
+  <div class="scarcity" id="scarcity"></div>
+
+  <div class="snake-body">
+    <div class="col-main">
+      <h3 class="section-title">Recommended
+        <small>ranked by value gained over waiting &mdash; press <kbd>1</kbd>&ndash;<kbd>6</kbd> to draft,
+        <kbd>shift</kbd>+number if someone else took him</small></h3>
+      <div id="recList" class="rec-list"></div>
+
+      <h3 class="section-title">Available players</h3>
+      <div class="toolbar tight">
+        <div class="pos-filter" id="poolPosFilter">
+          <button data-pos="ALL" class="active">All</button>
+          <button data-pos="QB">QB</button><button data-pos="RB">RB</button>
+          <button data-pos="WR">WR</button><button data-pos="TE">TE</button>
+          <button data-pos="K">K</button><button data-pos="DST">DST</button>
+        </div>
+        <input type="search" id="poolSearch" placeholder="Filter available…  (press /)">
+      </div>
+      <div id="poolList" class="pool"></div>
+    </div>
+
+    <aside class="col-side">
+      <h3 class="section-title">Your roster</h3>
+      <div id="myRoster" class="roster-list"></div>
+      <div class="side-actions">
+        <button id="undoPick" class="ghost">Undo last</button>
+        <button id="resetDraft" class="ghost danger">Reset draft</button>
+      </div>
+      <h3 class="section-title">Round-by-round outlook</h3>
+      <div id="planList" class="plan"></div>
+    </aside>
+  </div>
+</section>
+
+<!-- =================================================== KEEPER ========= -->
+<section class="tab" id="tab-keeper" hidden>
+  <div class="explain">
+    <h3>What a keeper is really worth</h3>
+    <p>A keeper is only good if he beats <em>the player you would have drafted with that pick
+       instead</em>. Every row below compares your keeper against the player the market expects
+       to be on the board at that exact slot, so the surplus is the real gain &mdash; not just
+       the player's raw value.</p>
+  </div>
+
+  <div class="keeper-add">
+    <input type="search" id="keeperSearch" placeholder="Add a player you can keep…" autocomplete="off">
+    <div id="keeperResults" class="autocomplete"></div>
+  </div>
+
+  <div class="table-wrap">
+    <table class="grid" id="keeperTable">
+      <thead><tr>
+        <th class="left">Player</th><th>Pos</th><th>Keeper cost</th>
+        <th>Player value</th><th>Pick would fetch</th><th>Surplus</th>
+        <th>Verdict</th><th></th>
+      </tr></thead>
+      <tbody></tbody>
+    </table>
+  </div>
+  <p class="hint" id="keeperHint"></p>
+</section>
+
+<!-- ================================================== AUCTION ========= -->
+<section class="tab" id="tab-auction" hidden>
+  <div class="auction-head">
+    <div class="stat-row" id="auctionStats"></div>
+    <div class="inflation-note" id="inflationNote"></div>
+  </div>
+
+  <div class="my-auction" id="myAuction"></div>
+
+  <div class="explain compact">
+    <p><strong>Target</strong> is what the player is worth in your league. <strong>Max bid</strong>
+       is the most you can pay and still profit &mdash; larger at the top of a tier, near zero
+       when the next player is just as good. Both adjust live as the room over- or under-spends.</p>
+  </div>
+
+  <div class="toolbar">
+    <div class="pos-filter" id="auctionPosFilter">
+      <button data-pos="ALL" class="active">All</button>
+      <button data-pos="QB">QB</button><button data-pos="RB">RB</button>
+      <button data-pos="WR">WR</button><button data-pos="TE">TE</button>
+      <button data-pos="K">K</button><button data-pos="DST">DST</button>
+    </div>
+    <input type="search" id="auctionSearch" placeholder="Search player…">
+    <button id="resetAuction" class="ghost danger">Reset auction</button>
+  </div>
+
+  <div class="table-wrap">
+    <table class="grid" id="auctionTable">
+      <thead><tr>
+        <th class="left">Player</th><th>Pos</th><th>Tier</th><th class="c-mid">Proj</th>
+        <th class="c-mid">VORP</th><th title="What he is worth in your league, adjusted for how the room is spending">Target</th>
+        <th title="The most you can pay and still profit">Max bid</th>
+        <th title="Enter the winning bid. Tick 'mine' if you won him.">Sold for</th>
+      </tr></thead>
+      <tbody></tbody>
+    </table>
+  </div>
+
+  <h3 class="section-title">Players sold</h3>
+  <div id="soldList" class="sold"></div>
+</section>
+
+<!-- ==================================================== INTEL ========= -->
+<section class="tab" id="tab-intel" hidden>
+  <nav class="subtabs" id="subtabs">
+    <button data-sub="coaching" class="active">Coaching &amp; scheme</button>
+    <button data-sub="injuries">Injury watch</button>
+    <button data-sub="movers">ADP movers</button>
+  </nav>
+
+  <div id="sub-coaching">
+    <div class="explain compact">
+      <p>Ten teams changed head coach for 2026 and 21 changed coordinator. Where a play-caller has
+         a track record, the team's pace and pass rate are blended toward what his offenses have
+         actually done. Where he does not, the model says so and widens the range rather than
+         inventing precision.</p>
+    </div>
+    <div id="coachGrid" class="coach-grid"></div>
+  </div>
+
+  <div id="sub-injuries" hidden>
+    <div class="explain compact">
+      <p>Current designations come from the live Sleeper feed. Durability is measured from five
+         seasons of weekly injury reports, with soft-tissue history treated as a recurrence risk
+         and structural injuries (ACL, Achilles) discounting the following season's efficiency.</p>
+    </div>
+    <div class="table-wrap">
+      <table class="grid" id="injuryTable">
+        <thead><tr>
+          <th class="left">Player</th><th>Pos</th><th>Status</th><th>Proj G</th>
+          <th>Avail</th><th>Risk</th><th class="left">Detail</th>
+        </tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </div>
+
+  <div id="sub-movers" hidden>
+    <div class="explain compact">
+      <p>Day-over-day ADP movement, built from the daily snapshots this site stores. A player
+         rising fast is one the room has decided something about &mdash; check whether the model agrees.</p>
+    </div>
+    <div id="moversList" class="movers"></div>
+  </div>
+</section>
+
+</main>
+
+<div class="drawer" id="drawer" hidden>
+  <div class="drawer-inner">
+    <button class="drawer-close" id="drawerClose">&times;</button>
+    <div id="drawerBody"></div>
+  </div>
+</div>
+
+<div class="toast" id="toast" hidden></div>
+
+<script src="/static/gate.js"></script>
+<script src="/static/engine.js"></script>
+<script src="/static/app.js"></script>
+</body>
+</html>
