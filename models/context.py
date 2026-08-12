@@ -25,6 +25,7 @@ from collections import defaultdict
 
 from coaching import COACHES_2026, fix_name, play_caller, staff_changes
 from config import (
+    feature,
     COACH_BLEND_NO_HISTORY, COACH_BLEND_WITH_HISTORY, COACH_HISTORY_START,
     HISTORY_SEASONS, LEAGUE_FALLBACK, SEASON, SEASON_WEIGHTS,
 )
@@ -287,15 +288,37 @@ def build_team_context(conn) -> dict:
     # League-average implied points, computed once rather than per team.
     lg_ipg = (sum(v[0] for v in implied.values()) / len(implied)) if implied else None
 
+    if feature("curated_coaching"):
+        staffs = COACHES_2026
+    else:
+        sched_hc = {}
+        for r in conn.execute("SELECT home_team, away_team, home_coach, away_coach "
+                              "FROM schedule WHERE season=?", (SEASON,)):
+            sched_hc[r["home_team"]] = fix_name(r["home_coach"])
+            sched_hc[r["away_team"]] = fix_name(r["away_coach"])
+        staffs = {t: {"hc": hc, "oc": "", "dc": "", "play_caller": "hc",
+                      "tree": "", "identity": ""} for t, hc in sched_hc.items() if t}
+
     rows, out = [], {}
-    for team, staff in COACHES_2026.items():
+    for team, staff in staffs.items():
         base = baselines.get(team, {"plays_pg": lg_plays, "pass_rate": lg_pass})
         plays, prate = base["plays_pg"], base["pass_rate"]
 
-        chg = staff_changes(team)
-        caller = play_caller(team)
+        if feature("curated_coaching"):
+            chg, caller = staff_changes(team), play_caller(team)
+        else:
+            prev = {}
+            for r in conn.execute("SELECT home_team, away_team, home_coach, away_coach "
+                                  "FROM schedule WHERE season=?", (SEASON - 1,)):
+                prev[r["home_team"]] = fix_name(r["home_coach"])
+                prev[r["away_team"]] = fix_name(r["away_coach"])
+            caller = staff.get("hc") or ""
+            changed = bool(caller) and prev.get(team) not in (None, caller)
+            chg = {"hc_changed": changed, "oc_changed": False, "caller_changed": changed,
+                   "prev_hc": prev.get(team), "prev_oc": None, "prev_caller": prev.get(team),
+                   "new_caller": caller, "severity": 0.75 if changed else 0.0}
         note_bits = []
-        if chg["caller_changed"]:
+        if chg["caller_changed"] and feature("coach_blend"):
             prof = profiles.get(caller)
             if prof and prof["seasons"] >= 1:
                 blend = COACH_BLEND_WITH_HISTORY * chg["severity"]
@@ -324,7 +347,7 @@ def build_team_context(conn) -> dict:
             note_bits.append(f"{caller} returns as play-caller; continuity from 2025")
 
         ipg, igames = implied.get(team, (None, 0))
-        if ipg is not None and igames >= 2 and lg_ipg:
+        if ipg is not None and igames >= 2 and lg_ipg and feature("implied_points"):
             # Light touch: the market only has ~3 games priced this early.
             adj = 1.0 + 0.10 * ((ipg / lg_ipg) - 1.0)
             plays *= min(max(adj, 0.94), 1.06)

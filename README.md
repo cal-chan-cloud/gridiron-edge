@@ -358,6 +358,68 @@ against identical inputs and asserts the results are bit-identical.
 
 ---
 
+## Does the model actually work? (backtesting)
+
+```powershell
+python backtest.py                  # score against a season that already happened
+python backtest.py --ablate         # + one run per feature, toggled
+python backtest.py --season 2024
+```
+
+It rebuilds the state as it existed *before* a season started — week-1 rosters,
+the preseason depth chart, production and injuries from prior years only — then
+projects that season and compares to what actually happened.
+
+Measured on three held-out seasons:
+
+| season | rank correlation | MAE | top-36 hit rate |
+|---|---|---|---|
+| 2025 | 0.627 | 49.8 | 55.6% |
+| 2024 | 0.605 | 54.3 | 41.7% |
+| 2023 | 0.615 | 52.3 | 44.4% |
+
+### What each input is actually worth
+
+`--ablate` switches every optional input off (or on) in turn. The numbers below
+are the **mean change in rank correlation across all three seasons**. "Sign
+flips" means it helped in some years and hurt in others, which is noise wearing
+a lab coat.
+
+| input | effect | verdict |
+|---|---|---|
+| TD regression | **−0.0304** when removed | The single most valuable thing in the model |
+| Availability (projected games) | **−0.0236** when removed | Second most valuable |
+| EPA per opportunity | +0.0034 when added, same sign 3/3 | **Enabled** as a result of this |
+| Next Gen separation | −0.0022 when removed, same sign 3/3 | Marginal, never harmful — kept |
+| Yards after contact | +0.0018 when **removed**, same sign 3/3 | **Disabled** — duplicates yards per carry |
+| Market-implied points | sign flips (−0.004 / +0.010 / +0.002) | **Disabled** — only ~3 games priced in August |
+| Snap share | sign flips (+0.018 / −0.002 / −0.005) | Not enabled — already implicit in target share |
+| Strength of schedule | **exactly 0.0000** | Computed and displayed, deliberately not applied |
+
+Net effect of the reconfiguration: **+0.0009 / +0.0029 / +0.0057** rank
+correlation across the three seasons — better in every one, with three fewer
+moving parts.
+
+Two features are kept **on prior grounds rather than evidence**, and it is worth
+being blunt about which: the **age curve** and the **coaching blend** both show a
+sign flip. The age curve is retained because the effect is well established and
+three seasons of ~300 players contain few players old enough for it to bite. The
+coaching blend is retained because the backtest cannot test it fairly — it forces
+the curated staff table off and falls back to schedule-derived coaches, so it
+only ever measured the mechanism, never this year's hand-verified list of 10
+head-coach and 21 coordinator changes.
+
+**Answering "do we need more metrics?"** — on this evidence, no. Two candidates
+were built and measured (snap share, EPA); only EPA earned its place, and only
+just. The model's accuracy is dominated by opportunity share × team volume ×
+regressed touchdowns. Peripheral metrics are decoration.
+
+**Answering "is there too much data?"** — yes, some. Three inputs were removed
+above. Beyond that, 17 of 37 stored `player_season` columns are never read, and
+several NGS and advanced-rushing columns are fetched and ignored. They are kept
+because the fetch is cheap and they make future experiments possible without a
+schema change, but nothing downstream depends on them.
+
 ## Verifying the arithmetic
 
 ```powershell

@@ -28,12 +28,68 @@ for _d in (CACHE_DIR, LOG_DIR):
 # --------------------------------------------------------------------------
 # Season / server
 # --------------------------------------------------------------------------
-SEASON = 2026
+# The target season. Env-driven so the whole model can be pointed at a PAST
+# season and scored against what actually happened (see backtest.py) — and so it
+# rolls forward to 2027 without edits.
+SEASON = int(os.environ.get("FF_SEASON", "2026"))
 # Seasons of history pulled for the projection model, newest first.
-HISTORY_SEASONS = [2025, 2024, 2023]
+HISTORY_SEASONS = [SEASON - 1, SEASON - 2, SEASON - 3]
 # Deeper history, used only for injury/durability rates and coach career profiles.
-INJURY_SEASONS = [2025, 2024, 2023, 2022, 2021]
+INJURY_SEASONS = [SEASON - n for n in range(1, 6)]
 COACH_HISTORY_START = 2012
+
+# Optional model inputs, each independently switchable so backtest.py can ablate
+# them and measure whether they actually earn their place. Defaults are the
+# shipping configuration. Never guess whether a feature helps — turn it off and
+# score it.
+# Settings below are what backtesting 2023, 2024 and 2025 actually supports.
+# Each number is the mean change in rank correlation when the feature is toggled,
+# across three held-out seasons (`python backtest.py --ablate`). "sign flips"
+# means it helped in some seasons and hurt in others, i.e. it is noise.
+FEATURES = {
+    # EARN THEIR PLACE — large, same sign in all three seasons.
+    "td_regression": True,      # -0.0304 when removed. The single biggest input.
+    "availability": True,       # -0.0236 when removed. Projecting games matters.
+
+    # SMALL BUT CONSISTENT — same sign in all three seasons.
+    "efficiency_epa": True,     # +0.0034 when added. EPA per opportunity carries
+                                # game state and leverage that raw yardage does not.
+    "ngs_separation": True,     # -0.0022 when removed. Marginal, but never harmful.
+
+    # MEASURED AND REJECTED.
+    "adv_rush_yac": False,      # +0.0018 when REMOVED, same sign 3/3: yards after
+                                # contact consistently cost a little accuracy. It
+                                # duplicates information already in yards per carry.
+    "implied_points": False,    # sign flips (-0.004 / +0.010 / +0.002) and the
+                                # mechanism is thin anyway: in August only ~3 games
+                                # per team have a line posted. Removed as noise.
+    "sos": False,               # exactly 0.0000 mean. Strength of schedule is
+                                # computed and DISPLAYED, but deliberately does not
+                                # feed a projection, because it measurably does not help.
+    "snap_share": False,        # sign flips (+0.018 in 2023, negative in 2024/25).
+                                # Snap share is already implicit in target share.
+
+    # RETAINED ON PRIOR GROUNDS, NOT ON EVIDENCE — stated plainly rather than
+    # dressed up. Three seasons of ~300 players cannot resolve either of these.
+    "age_curve": True,          # sign flips. Kept because the aging effect is well
+                                # established and the sample contains few players at
+                                # the extremes where it bites; it is damped to 55%.
+    "coach_blend": True,        # sign flips, BUT the backtest forces curated_coaching
+                                # off, so it only ever tested the blend mechanism with
+                                # schedule-derived coaches — never the hand-verified
+                                # 2026 staff list (10 HC and 21 OC changes). A null
+                                # here is weak evidence about the shipping feature.
+
+    "curated_coaching": True,   # 2026 staff table; off when backtesting a past year
+}
+
+
+def feature(name: str) -> bool:
+    """Env override wins, so a backtest can flip a flag without editing config."""
+    env = os.environ.get("FF_FEAT_" + name.upper())
+    if env is not None:
+        return env not in ("0", "false", "False", "")
+    return FEATURES.get(name, False)
 
 PORT = int(os.environ.get("FF_PORT", "5057"))
 HOST = os.environ.get("FF_HOST", "127.0.0.1")

@@ -651,6 +651,41 @@ process.stdout.write(JSON.stringify({{board, recs, keep, inf, probs, picks}}));
     check("inflation note identical", pyi["note"] == js["inf"]["note"])
 
 
+def test_backtest_accuracy():
+    """Guard the measured accuracy of the model against silent regression.
+
+    Runs only when a backtest database is present (build one with
+    `python backtest.py`), because it needs a reconstructed pre-season state.
+    The thresholds are floors, deliberately set a little below the measured
+    values so ordinary noise does not fail the build — the point is to catch a
+    change that makes the model materially worse, not to pin it to a decimal.
+    """
+    import subprocess
+    section("13. BACKTESTED ACCURACY (regression floor)")
+    floors = {2025: 0.60, 2024: 0.58, 2023: 0.59}
+    ran = 0
+    for season, floor in floors.items():
+        if not (BASE_DIR / f"backtest_{season}.db").exists():
+            continue
+        r = subprocess.run([sys.executable, str(BASE_DIR / "backtest.py"), "--season", str(season)],
+                           capture_output=True, text=True, timeout=900, cwd=str(BASE_DIR))
+        rho = None
+        for line in r.stdout.splitlines():
+            if "Spearman" in line:
+                try:
+                    rho = float(line.split(":")[-1].strip())
+                except ValueError:
+                    pass
+        if rho is None:
+            check(f"{season} backtest produced a score", False, r.stderr.strip()[:120])
+            continue
+        ran += 1
+        check(f"{season} rank correlation >= {floor}", rho >= floor, f"{rho:.4f}")
+    if not ran:
+        check("backtest databases present", True,
+              "skipped - run `python backtest.py` to enable this section")
+
+
 def main():
     print("Gridiron Edge - model verification")
     with db() as conn:
@@ -676,6 +711,7 @@ def main():
         test_data_integrity(conn, rows)
         test_coaching(conn, ctx)
     test_js_parity()
+    test_backtest_accuracy()
 
     print(f"\n{'=' * 72}")
     print(f"{PASS} passed, {FAIL} failed")

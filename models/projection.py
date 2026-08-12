@@ -38,6 +38,7 @@ from __future__ import annotations
 from collections import defaultdict
 
 from config import (
+    feature,
     AGE_CURVES, DEPTH_PRIOR_CARRY_SHARE, DEPTH_PRIOR_TARGET_SHARE, GAMES,
     HISTORY_SEASONS, NEW_TEAM_SAMPLE_DISCOUNT, NORMALISE_SCALE_BOUNDS,
     ROOKIE_CAPITAL_BOOST, SCORING_PRESETS, SEASON_WEIGHTS, SHRINK,
@@ -135,6 +136,8 @@ def _age_mult(pos: str, age) -> float:
     through compounding. The curve is damped to the share of the decline that is
     genuinely per-touch.
     """
+    if not feature("age_curve"):
+        return 1.0
     curve = AGE_CURVES.get(pos)
     if not curve or not age:
         return 1.0
@@ -181,6 +184,8 @@ def _load_history(conn) -> dict:
             "carry_share": car / tt["carries"],
             "qb_share": ((att + (r["sacks"] or 0)) / tt["dropbacks"]),
             "air_share": r["air_yards_share"] or 0.0,
+            "rec_epa_pt": (r["receiving_epa"] or 0) / tgt if tgt else 0.0,
+            "rush_epa_pc": (r["rushing_epa"] or 0) / car if car else 0.0,
             "ypt": (r["receiving_yards"] or 0) / tgt if tgt else 0.0,
             "ypc": (r["rushing_yards"] or 0) / car if car else 0.0,
             "ypa": (r["passing_yards"] or 0) / att if att else 0.0,
@@ -254,6 +259,23 @@ def project(conn, scoring_key: str = "half_ppr", team_ctx=None, injuries=None) -
 
     ngs = {r["gsis_id"]: r for r in conn.execute(
         "SELECT * FROM ngs_rec WHERE season=?", (HISTORY_SEASONS[0],))}
+
+    # Recency-weighted snap share per player, keyed by gsis via the pfr bridge.
+    snap_pct = {}
+    if feature("snap_share"):
+        acc = defaultdict(lambda: [0.0, 0.0])
+        for r in conn.execute(
+            "SELECT s.pfr_id, s.season, s.off_pct, p.gsis_id FROM snaps s "
+            "JOIN players p ON p.pfr_id = s.pfr_id WHERE p.gsis_id IS NOT NULL"
+        ):
+            try:
+                w = SEASON_WEIGHTS[HISTORY_SEASONS.index(r["season"])]
+            except ValueError:
+                continue
+            a = acc[r["gsis_id"]]
+            a[0] += w * (r["off_pct"] or 0.0)
+            a[1] += w
+        snap_pct = {g: v[0] / v[1] for g, v in acc.items() if v[1] > 0}
     advr = {}
     for r in conn.execute("SELECT * FROM adv_rush WHERE season=?", (HISTORY_SEASONS[0],)):
         advr[r["pfr_id"]] = r
@@ -293,6 +315,22 @@ def project(conn, scoring_key: str = "half_ppr", team_ctx=None, injuries=None) -
 
         tgt_prior = _w_depth(pos, DEPTH_PRIOR_TARGET_SHARE, depth)
         car_prior = _w_depth(pos, DEPTH_PRIOR_CARRY_SHARE, depth)
+        if feature("snap_share"):
+            sp = snap_pct.get(p["gsis_id"])
+            if sp and sp > 0.05:
+                # Blend the depth-chart prior with the prior implied by the depth
+                # rank his snap share actually corresponds to. An August depth
+                # chart is a guess; last year's snap share is a measurement.
+                for tbl, key in ((DEPTH_PRIOR_TARGET_SHARE, "t"), (DEPTH_PRIOR_CARRY_SHARE, "c")):
+                    arr = tbl.get(pos)
+                    if not arr:
+                        continue
+                    implied_rank = 1 if sp >= 0.70 else 2 if sp >= 0.50 else 3 if sp >= 0.30 else 4
+                    implied = _w_depth(pos, tbl, implied_rank)
+                    if key == "t":
+                        tgt_prior = 0.5 * tgt_prior + 0.5 * implied
+                    else:
+                        car_prior = 0.5 * car_prior + 0.5 * implied
         if is_rookie:
             boost = _rookie_boost(p["draft_number"])
             tgt_prior *= boost
@@ -332,7 +370,8 @@ def project(conn, scoring_key: str = "half_ppr", team_ctx=None, injuries=None) -
             "rookie": is_rookie, "moved": moved, "last_team": last_team,
             "tgt_share_raw": tgt_share, "car_share_raw": car_share,
             "qb_share_raw": qb_share, "n_tgt": n_tgt, "n_car": n_car,
-            "games": inj.get(p["player_id"], {}).get("games", GAMES * 0.87),
+            "games": (inj.get(p["player_id"], {}).get("games", GAMES * 0.87)
+                      if feature("availability") else float(GAMES)),
         })
 
     # ------------------------------------------- stage 2: normalise shares --
@@ -417,9 +456,13 @@ def project(conn, scoring_key: str = "half_ppr", team_ctx=None, injuries=None) -
         c = ctx[team]
         seasons = e["seasons"]
         prof = inj.get(p["player_id"], {})
-        games = prof.get("games", GAMES * 0.85)
-        eff_mult = prof.get("eff_mult", 1.0)
+        games = prof.get("games", GAMES * 0.85) if feature("availability") else float(GAMES)
+        eff_mult = prof.get("eff_mult", 1.0) if feature("availability") else 1.0
         age_mult = _age_mult(pos, p["age"])
+        # SOS was computed and displayed but never applied. Damped by half: a
+        # season's opponent points-allowed is a noisy read on next year's
+        # defences, so it nudges rather than drives.
+        sos_mult = 1.0 + (c.get("sos", 1.0) - 1.0) * 0.5 if feature("sos") else 1.0
         tt = td_rates.get(team, td_rates["_league"])
 
         dropbacks_pg = c["pass_att_pg"]
@@ -441,7 +484,14 @@ def project(conn, scoring_key: str = "half_ppr", team_ctx=None, injuries=None) -
                 ypt = _shrink(obs_ypt if obs_ypt is not None else base_ypt,
                               n_tgt_opp, base_ypt, SHRINK["ypt_targets"])
                 # Next Gen separation/YAC-over-expected is a real, if small, edge.
-                g = ngs.get(p["gsis_id"])
+                g = ngs.get(p["gsis_id"]) if feature("ngs_separation") else None
+                if feature("efficiency_epa"):
+                    # EPA per target carries game-state and leverage that raw
+                    # yardage does not. Bounded hard: it is an adjustment, not a
+                    # second opinion.
+                    obs_epa, _ = _weighted(seasons, "rec_epa_pt")
+                    if obs_epa is not None and n_tgt_opp > 40:
+                        ypt *= 1.0 + max(-0.08, min(0.08, obs_epa * 0.18))
                 if g and g["avg_separation"]:
                     sep_adj = 1.0 + max(-0.06, min(0.06, (g["avg_separation"] - 2.85) * 0.035))
                     yac_adj = 1.0 + max(-0.05, min(0.05, (g["yac_above_exp"] or 0) * 0.045))
@@ -453,7 +503,7 @@ def project(conn, scoring_key: str = "half_ppr", team_ctx=None, injuries=None) -
                 catch = _shrink(obs_catch if obs_catch is not None else base_catch,
                                 n_tgt_opp, base_catch, SHRINK["ypt_targets"])
                 receptions = targets * catch
-                rec_yd = targets * ypt * eff_mult * age_mult
+                rec_yd = targets * ypt * eff_mult * age_mult * sos_mult
 
                 # Receiving TDs: usage-implied vs. personal rate.
                 obs_air, _ = _weighted(seasons, "air_share")
@@ -462,7 +512,8 @@ def project(conn, scoring_key: str = "half_ppr", team_ctx=None, injuries=None) -
                 implied_td = team_pass_td * (0.55 * e["tgt_share"] + 0.45 * air_share)
                 obs_rate, _ = _weighted(seasons, "rec_td_rate")
                 personal_td = targets * (obs_rate if obs_rate is not None else 0.0)
-                w = TD_PERSONAL_WEIGHT[pos] * min(n_tgt_opp / SHRINK["td_rate_opp"], 1.0)
+                w = (TD_PERSONAL_WEIGHT[pos] * min(n_tgt_opp / SHRINK["td_rate_opp"], 1.0)
+                     if feature("td_regression") else 1.0)
                 rec_td = (w * personal_td + (1 - w) * implied_td) * age_mult
 
             # ---- rushing
@@ -473,14 +524,18 @@ def project(conn, scoring_key: str = "half_ppr", team_ctx=None, injuries=None) -
                 base_ypc = pri["ypc"].get(pos, POS_YPC.get(pos, 4.2))
                 ypc = _shrink(obs_ypc if obs_ypc is not None else base_ypc,
                               n_car_opp, base_ypc, SHRINK["ypc_carries"])
-                a = advr.get(p["pfr_id"])
+                if feature("efficiency_epa"):
+                    obs_repa, _ = _weighted(seasons, "rush_epa_pc")
+                    if obs_repa is not None and n_car_opp > 40:
+                        ypc *= 1.0 + max(-0.08, min(0.08, obs_repa * 0.22))
+                a = advr.get(p["pfr_id"]) if feature("adv_rush_yac") else None
                 if a and a["carries"] and a["carries"] > 60 and a["yac_att"]:
                     # Yards after contact is far more repeatable than raw YPC,
                     # which is heavily blocking-dependent.
                     ypc *= 1.0 + max(-0.05, min(0.06, (a["yac_att"] - 2.9) * 0.05))
                     if a["yac_att"] >= 3.4:
                         notes.append(f"Creates yardage after contact ({a['yac_att']:.1f}/att)")
-                rush_yd = carries * ypc * eff_mult * age_mult
+                rush_yd = carries * ypc * eff_mult * age_mult * sos_mult
 
                 team_rush_td = team_carries_pg * games * tt["rush_td_rate"]
                 obs_tds, _ = _weighted(seasons, "rush_td_share")
@@ -488,7 +543,8 @@ def project(conn, scoring_key: str = "half_ppr", team_ctx=None, injuries=None) -
                 implied = team_rush_td * (0.62 * e["car_share"] + 0.38 * td_share)
                 obs_rate, _ = _weighted(seasons, "rush_td_rate")
                 personal = carries * (obs_rate if obs_rate is not None else 0.0)
-                w = TD_PERSONAL_WEIGHT.get(pos, 0.3) * min(n_car_opp / SHRINK["td_rate_opp"], 1.0)
+                w = (TD_PERSONAL_WEIGHT.get(pos, 0.3) * min(n_car_opp / SHRINK["td_rate_opp"], 1.0)
+                     if feature("td_regression") else 1.0)
                 rush_td = w * personal + (1 - w) * implied
 
             # ---- passing
@@ -499,7 +555,7 @@ def project(conn, scoring_key: str = "half_ppr", team_ctx=None, injuries=None) -
                 base_ypa = pri["ypa"]
                 ypa = _shrink(obs_ypa if obs_ypa is not None else base_ypa, n_att,
                               base_ypa, SHRINK["ypa_attempts"])
-                pass_yd = pass_att * ypa * age_mult
+                pass_yd = pass_att * ypa * age_mult * sos_mult
                 obs_ptd, _ = _weighted(seasons, "pass_td_rate")
                 ptd_rate = _shrink(obs_ptd if obs_ptd is not None else tt["pass_td_rate"],
                                    n_att, tt["pass_td_rate"], 240.0)

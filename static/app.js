@@ -1013,9 +1013,14 @@ async function openPlayer(id) {
           <tr><td>Rec yards / TD</td><td>${fmt(p.rec_yd)} · ${fmt(p.rec_td, 1)}</td></tr>
           <tr><td>Share of team targets</td><td>${fmt((p.tgt_share || 0) * 100, 1)}%</td></tr>` : ''}
         <tr><td>Replacement level at ${p.position}</td><td>${fmt(p.replacement)}</td></tr>
-        <tr><td>Strength of schedule</td><td>${fmt((p.sos || 1) * 100 - 100, 1)}% vs average</td></tr>
       </tbody></table>
     </div>
+
+    <div class="dsec"><h4>Context — not in the projection</h4>
+      <p>Strength of schedule <strong>${fmt((p.sos || 1) * 100 - 100, 1)}%</strong> vs average.
+         Shown because it is worth knowing, but deliberately not applied: across three
+         backtested seasons it changed rank accuracy by 0.0000, so folding it in would add
+         a number without adding information.</p></div>
 
     <div class="dsec"><h4>Availability</h4>
       <p>${fmt((p.availability || 0) * 100, 0)}% of the season projected ·
