@@ -309,11 +309,19 @@ gate above.
 
 ## Note when editing the UI
 
-The site runs with `FF_NO_RELOAD=1` (Flask debug off), which means **Jinja caches
-`templates/index.html`** — HTML edits need a server restart to appear. CSS and JS
-are static files and reload on their own. This wasted a debugging cycle: a change
-looked like it had silently failed when the server was simply serving the old
-template.
+`app.py` serves the **built** site out of `docs/`, not the sources in `static/`
+and `templates/`. So after editing any frontend file:
+
+```powershell
+python export_static.py     # copies static/* and renders templates/index.html into docs/
+```
+
+Without that step the change appears to have silently failed, because the server
+is still serving the previous build. `app.py` re-exports automatically on startup
+when the *data* has moved on, but it cannot know you edited a stylesheet.
+
+(It leaves an encrypted build alone rather than overwriting ciphertext with
+plaintext, so re-run `node encrypt_build.js` if you were testing that path.)
 
 ## Layout
 
@@ -331,12 +339,22 @@ models/
   projection.py        the projection engine
   valuation.py         replacement level, VORP, tiers, auction $, keeper, inflation
   draft.py             snake order, survival probability, pick recommendation
-app.py                 Flask API + page
-static/, templates/    the UI
+export_static.py       builds docs/ — the thing that actually gets served
+encrypt_build.js       optional AES-GCM pass over docs/data (node, no deps)
+app.py                 static file server for docs/ (the SAME build Pages serves)
+tests.py               109 invariant checks, incl. Python<->JS parity
+static/
+  engine.js            valuation + draft maths, in the browser
+  app.js               UI
+  gate.js              passphrase gate for encrypted builds
+  style.css
+templates/index.html   rendered into docs/index.html by the exporter
+docs/                  the build (gitignored; published as a Pages artifact)
 ```
 
-Projections are cached per `(scoring, data_version)`; every fetcher bumps
-`data_version`, so a fresh pull is picked up without restarting the site.
+The Python model and `static/engine.js` implement the same valuation maths in two
+languages, which is a real drift risk — so `tests.py` runs the JS under node
+against identical inputs and asserts the results are bit-identical.
 
 ---
 

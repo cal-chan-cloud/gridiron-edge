@@ -200,6 +200,10 @@ def build() -> int:
             "SELECT window_start, window_end, total_drafts FROM adp LIMIT 1").fetchone()
         n_players = conn.execute(
             "SELECT COUNT(*) n FROM players WHERE team IS NOT NULL AND team!=''").fetchone()["n"]
+        # Always present, so gate.js reads a real file rather than 404ing on
+        # every load of a plain build. encrypt_build.js overwrites it.
+        write_json(DATA / "manifest.json", {"encrypted": False})
+
         total += write_json(DATA / "meta.json", {
             "season": SEASON,
             "last_fetch": get_meta(conn, "last_fetch"),

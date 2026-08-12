@@ -77,12 +77,17 @@ button, input, select { font-family: inherit; font-size: inherit; color: inherit
 em { font-style: normal; color: var(--text); font-weight: 600; }
 
 /* ------------------------------------------------------------- topbar -- */
+/* Deliberately NOT sticky. It wraps to 274px on a 390px phone — a third of the
+   screen, permanently pinned, holding nothing but settings you choose once
+   before the draft. The tab bar is pinned instead: that is the thing you need
+   mid-draft. One pinned bar at every width also kills the magic-number
+   coupling between .topbar's height and .tabs' `top`. */
 .topbar {
   display: flex; align-items: center; gap: 20px;
   padding: 12px 20px;
   background: var(--surface);
   border-bottom: 1px solid var(--border);
-  position: sticky; top: 0; z-index: 50;
+  z-index: 50;
   flex-wrap: wrap;
 }
 .brand { display: flex; align-items: center; gap: 11px; }
@@ -139,7 +144,7 @@ button.icon { padding: 7px 10px; font-size: 15px; }
 .tabs {
   display: flex; gap: 2px; padding: 0 20px;
   background: var(--surface); border-bottom: 1px solid var(--border);
-  position: sticky; top: 61px; z-index: 40; overflow-x: auto;
+  position: sticky; top: 0; z-index: 40; overflow-x: auto;
 }
 .tabs button {
   background: none; border: none; border-bottom: 2px solid transparent;
@@ -297,7 +302,8 @@ table.grid tbody tr.dimmed { opacity: .42; }
 .pool-row button.mine { border-color: var(--accent-dim); color: var(--accent); }
 .pool-row button:hover { background: var(--surface-3); color: var(--text); }
 
-.col-side { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px; position: sticky; top: 116px; }
+/* top offsets the 46px tab bar, the only pinned chrome now that .topbar scrolls. */
+.col-side { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px; position: sticky; top: 66px; }
 .roster-list { display: flex; flex-direction: column; gap: 5px; margin-bottom: 12px; }
 .roster-row { display: flex; align-items: center; gap: 8px; padding: 6px 8px; background: var(--surface-2); border-radius: var(--radius-sm); font-size: 12.5px; }
 .roster-row .rl { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
@@ -359,7 +365,9 @@ table.grid tbody tr.dimmed { opacity: .42; }
 .sold-chip button:hover { color: var(--bad); }
 
 /* -------------------------------------------------------------- intel -- */
-.coach-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(390px, 1fr)); gap: 12px; }
+/* min(390px, 100%): a bare 390px track is wider than a 366px phone container and
+   is the one rule on the site that made the whole PAGE pan sideways. */
+.coach-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(390px, 100%), 1fr)); gap: 12px; }
 .coach-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px 16px; }
 .coach-card.changed { border-left: 3px solid var(--warn); }
 .coach-card .hd { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 8px; }
@@ -514,13 +522,50 @@ kbd {
   table.grid th.c-mid, table.grid td.c-mid { display: none; }
   main { padding: 12px; }
   .topbar { padding: 10px 12px; gap: 10px; }
-  .tabs { padding: 0 12px; top: auto; position: static; }
-  .table-wrap { max-height: none; }
+  .tabs { padding: 0 12px; }
   .col-side { position: static; }
-  .freshness { margin-left: 0; text-align: left; width: 100%; }
+  /* Not width:100% — that forced the theme toggle onto its own row and cost
+     ~44px of an already overlong header. */
+  .freshness { margin-left: 0; text-align: left; }
   .snake-head { padding: 11px 12px; }
+
+  /* The board and auction tables keep their own scroller on a phone so the
+     column headers can stay pinned. Without this, 400 rows of numbers scroll
+     under a header that left the screen ages ago and you are reading an
+     unlabelled grid. 46px offsets the pinned tab bar. */
+  .table-wrap { max-height: none; }
+  #tab-board .table-wrap, #tab-auction .table-wrap { max-height: calc(100vh - 120px); }
+  #tab-board table.grid th, #tab-auction table.grid th { top: 46px; }
+
+  /* .rec has THREE children but only two tracks here, so the actions wrapper
+     auto-placed into row 2 of the 24px rank track: the stat line wrapped one
+     token per line and each card ballooned from 87px to 290px, pushing the
+     Draft button below the fold on the tab you use every single pick. */
   .rec { grid-template-columns: 24px minmax(0,1fr); }
+  .rec .acts { grid-column: 2; justify-content: space-between; gap: 10px; }
   .rec .nums { text-align: left; }
+
+  /* 44px is the minimum reliable touch target. Only the vertical axis and the
+     gap change — widening these steals the player-name column and wraps it. */
+  .pool-row button { min-height: 44px; padding: 0 9px; }
+  .pool-row .acts { gap: 10px; }
+  .rec .take, .rec .gone { min-height: 44px; }
+
+  /* iOS Safari zooms the whole page whenever a focused control computes under
+     16px, and does not zoom back out on blur — so one tap on the search box
+     leaves you panning a magnified board mid-draft. The class-qualified
+     selectors are required: a media query adds no specificity over
+     `.settings input`. */
+  input, select, textarea,
+  .settings input, .settings select,
+  .roster-grid input, input[type="search"] { font-size: 16px; }
+  .sold-input, .rnd-input { padding: 7px; }
+
+  /* These two tables have no c-mid/c-low columns to drop, so they overflowed
+     their wrapper by hundreds of pixels with no cue that they scroll. */
+  #keeperTable td, #keeperTable th,
+  #injuryTable td, #injuryTable th { white-space: normal; }
+  #injuryTable td:last-child { min-width: 180px; }
 }
 /* Phone: drop the rank (position in the list already conveys it), tighten the
    cells and let long names ellipsis, so Proj / VORP / $ / Edge fit without
@@ -591,3 +636,19 @@ kbd {
   padding: 8px 11px; border-radius: var(--radius-sm);
 }
 .gate-box small { display: block; margin-top: 16px; color: var(--text-faint); font-size: 11.5px; }
+
+/* ---------------------------------------------------------- data error -- */
+/* Pinned to the bottom so it cannot be mistaken for part of the board. The
+   point is that stale numbers on screen are worse than no numbers. */
+.data-error {
+  position: fixed; left: 12px; right: 12px; bottom: 12px; z-index: 400;
+  background: var(--surface); border: 1px solid var(--bad);
+  border-left: 3px solid var(--bad); border-radius: var(--radius);
+  padding: 12px 15px; color: var(--text-dim); font-size: 13px;
+  box-shadow: var(--shadow); max-width: 640px; margin: 0 auto;
+}
+.data-error strong { color: var(--bad); display: block; margin-bottom: 2px; }
+.data-error button {
+  margin-top: 9px; background: var(--accent); color: #fff; border: none;
+  border-radius: var(--radius-sm); padding: 7px 14px; cursor: pointer; font-weight: 620;
+}

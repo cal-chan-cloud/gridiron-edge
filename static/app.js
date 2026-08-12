@@ -36,10 +36,43 @@ let TEAMS = null;
 async function loadJSON(path) {
   spin(true);
   try {
-    const r = await fetch(path, { cache: 'no-store' });
-    if (!r.ok) throw new Error(`${path} -> HTTP ${r.status}`);
+    // no-cache, NOT no-store. Both revalidate on every load, so a stale board is
+    // still impossible — but no-store makes an HTTP cache hit structurally
+    // impossible too, so ~1MB of JSON was re-downloaded on every single load,
+    // including a mid-draft reload on venue wifi. no-cache turns the unchanged
+    // case into a 304.
+    const r = await fetch(path, { cache: 'no-cache' });
+    if (!r.ok) throw new Error(`${path} — HTTP ${r.status}`);
     return await r.json();
   } finally { spin(false); }
+}
+
+/* A failed fetch used to either brick the page or, worse, leave the previous
+   numbers on screen with no indication they were now wrong. Mid-draft on bad
+   wifi that is the difference between "retry" and "trust a stale board". */
+let unloading = false;
+addEventListener('pagehide', () => { unloading = true; });
+addEventListener('beforeunload', () => { unloading = true; });
+
+function dataError(err, what) {
+  // A fetch aborted because the page is navigating away is not a failure the
+  // user needs to see. Crying wolf on a reload would teach them to ignore the
+  // bar on the one occasion it matters.
+  if (unloading) return;
+  console.error(what, err);
+  const bar = $('#dataError') || (() => {
+    const el = document.createElement('div');
+    el.id = 'dataError'; el.className = 'data-error';
+    document.body.appendChild(el);
+    return el;
+  })();
+  bar.innerHTML = `<strong>Could not load ${esc(what)}.</strong>
+    ${esc(String(err && err.message || err))} —
+    the numbers on screen may be out of date.
+    <button id="dataRetry">Retry</button>`;
+  bar.hidden = false;
+  const btn = $('#dataRetry');
+  if (btn) btn.onclick = () => { bar.hidden = true; location.reload(); };
 }
 
 async function projections(scoring) {
@@ -77,6 +110,26 @@ const money = n => (n === null || n === undefined) ? '–' : '$' + Math.max(1, M
 const posBadge = p => `<span class="pos-badge pos-${p.position}">${p.pos_label || p.position}</span>`;
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c =>
   ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
+
+/* Typing "jamarr" must find Ja'Marr Chase, "ajbrown" must find A.J. Brown, and
+   "amonra" must find Amon-Ra St. Brown. Matching the raw string means the
+   apostrophes and periods have to be typed exactly, which is the last thing you
+   want with 90 seconds on the clock. Mirrors norm_name() in data/sources.py. */
+const foldName = s => String(s ?? '').normalize('NFKD')
+  .replace(/[̀-ͯ]/g, '').toLowerCase().replace(/[^a-z0-9]/g, '');
+
+/* Precomputed once per board build; searching 1127 players per keystroke should
+   not also be normalising 1127 strings. */
+function indexSearch(rows) {
+  for (const p of rows) p._s = foldName(p.name) + ' ' + String(p.team || '').toLowerCase();
+  return rows;
+}
+const matches = (p, q) => !q || (p._s || '').includes(q) ||
+  p.name.toLowerCase().includes(q) || String(p.team || '').toLowerCase().includes(q);
+const queryOf = el => {
+  const raw = (el && el.value || '').trim();
+  return raw ? (/^[a-z0-9]+$/i.test(raw) ? raw.toLowerCase() : foldName(raw)) : '';
+};
 
 function toast(msg) {
   const t = $('#toast');
@@ -116,7 +169,13 @@ const rosterSize = () => Object.values(state.league.roster).reduce((a, b) => a +
 async function boot() {
   load();
   applyTheme();
-  const meta = META = await loadJSON('data/meta.json');
+  let meta;
+  try {
+    meta = META = await loadJSON('data/meta.json');
+  } catch (e) {
+    dataError(e, 'the site data');
+    return;
+  }
 
   const sel = $('#scoring');
   sel.innerHTML = Object.entries(meta.scoring_presets)
@@ -160,16 +219,31 @@ function wire() {
   $('#rosterBtn').onclick = () => { $('#rosterPanel').hidden = !$('#rosterPanel').hidden; };
   $('#helpBtn').onclick = showHelp;
 
+  const LIMITS = { teams: [4, 20, 12], rounds: [1, 30, 16], budget: [10, 1000, 200] };
   ['scoring','teams','rounds','budget'].forEach(id => {
     $('#' + id).onchange = e => {
-      state.league[id] = id === 'scoring' ? e.target.value : Number(e.target.value);
+      if (id === 'scoring') {
+        state.league.scoring = e.target.value;
+      } else {
+        // Clearing the field yields Number('') === 0, which used to price the
+        // whole board at $1 and persist it. Clamp to the same bounds the server
+        // model uses and write the corrected value back into the input.
+        const [lo, hi, dflt] = LIMITS[id];
+        const raw = Number(e.target.value);
+        const val = Number.isFinite(raw) && raw > 0 ? Math.min(Math.max(Math.round(raw), lo), hi) : dflt;
+        state.league[id] = val;
+        e.target.value = val;
+      }
       if (id === 'teams') buildSlotButtons();
       save(); refreshBoard();
     };
   });
   $('#rosterGrid').addEventListener('change', e => {
     if (!e.target.dataset.slot) return;
-    state.league.roster[e.target.dataset.slot] = Number(e.target.value);
+    const raw = Number(e.target.value);
+    const val = Number.isFinite(raw) ? Math.min(Math.max(Math.round(raw), 0), 10) : 0;
+    state.league.roster[e.target.dataset.slot] = val;
+    e.target.value = val;
     save(); refreshBoard();
   });
 
@@ -192,11 +266,25 @@ function wire() {
   posGroup('#auctionPosFilter', 'auctionPos', renderAuction);
   posGroup('#poolPosFilter', 'poolPos', renderPool);
 
-  $('#boardSearch').oninput = renderBoard;
+  // Trailing debounce: typing "jefferson" was 9 full 400-row renders (~450ms
+   // each on a throttled phone). Now it is one, after you stop typing.
+  let boardSearchTimer = null;
+  $('#boardSearch').oninput = () => {
+    clearTimeout(boardSearchTimer);
+    boardSearchTimer = setTimeout(renderBoard, 120);
+  };
   $('#hideRisk').onchange  = renderBoard;
   $('#hideDrafted').onchange = e => { state.hideDrafted = e.target.checked; save(); renderBoard(); };
-  $('#poolSearch').oninput = renderPool;
-  $('#auctionSearch').oninput = renderAuction;
+  let poolSearchTimer = null;
+  $('#poolSearch').oninput = () => {
+    clearTimeout(poolSearchTimer);
+    poolSearchTimer = setTimeout(renderPool, 120);
+  };
+  let auctionSearchTimer = null;
+  $('#auctionSearch').oninput = () => {
+    clearTimeout(auctionSearchTimer);
+    auctionSearchTimer = setTimeout(renderAuction, 120);
+  };
 
   $$('#boardTable thead th').forEach(th => th.onclick = () => {
     const k = th.dataset.sort; if (!k) return;
@@ -311,7 +399,13 @@ function syncExport() {
 
 /* -------------------------------------------------------------- board -- */
 async function refreshBoard() {
-  BOARD = await buildBoard();
+  try {
+    BOARD = await buildBoard();
+  } catch (e) {
+    dataError(e, 'the projections');
+    return;
+  }
+  indexSearch(BOARD);
   BY_ID = Object.fromEntries(BOARD.map(p => [p.player_id, p]));
   renderBoard();
   syncExport();
@@ -321,11 +415,11 @@ async function refreshBoard() {
 }
 
 function filteredBoard() {
-  const q = ($('#boardSearch').value || '').toLowerCase().trim();
+  const q = queryOf($('#boardSearch'));
   const hide = $('#hideRisk').checked;
   const taken = new Set(state.taken);
   let rows = BOARD.filter(p => state.pos === 'ALL' || p.position === state.pos);
-  if (q) rows = rows.filter(p => p.name.toLowerCase().includes(q) || (p.team || '').toLowerCase().includes(q));
+  if (q) rows = rows.filter(p => matches(p, q));
   if (hide) rows = rows.filter(p => p.injury_risk !== 'high');
   if (state.hideDrafted) rows = rows.filter(p => !taken.has(p.player_id));
   const { key, dir } = state.sort;
@@ -455,7 +549,7 @@ async function refreshSnake() {
           ${p.injury_risk === 'high' ? '<span class="risk high">injury risk</span>' : ''}</div>
         <div class="why">${esc(p.reason)}</div>
       </div>
-      <div style="display:flex;align-items:center">
+      <div class="acts" style="display:flex;align-items:center">
         <div class="nums">
           <div class="v">${fmt(p.vorp)}</div>
           <div class="s">VORP · ${money(p.auction_value)} · ${p.adp ? 'ADP ' + fmt(p.adp, 1) : 'no ADP'}</div>
@@ -515,11 +609,11 @@ function renderScarcity() {
 }
 
 function renderPool() {
-  const q = ($('#poolSearch').value || '').toLowerCase().trim();
+  const q = queryOf($('#poolSearch'));
   const taken = new Set(state.taken);
   let rows = BOARD.filter(p => !taken.has(p.player_id));
   if (state.poolPos !== 'ALL') rows = rows.filter(p => p.position === state.poolPos);
-  if (q) rows = rows.filter(p => p.name.toLowerCase().includes(q) || (p.team || '').toLowerCase().includes(q));
+  if (q) rows = rows.filter(p => matches(p, q));
   $('#poolList').innerHTML = rows.slice(0, 160).map(p => `
     <div class="pool-row">
       <div><strong>${esc(p.name)}</strong> <span class="pmeta">${esc(p.team)} · ${fmt(p.points)} pts · ${money(p.auction_value)} · tier ${p.tier ?? '–'}</span></div>
@@ -585,11 +679,11 @@ async function loadPlan() {
 
 /* ------------------------------------------------------------- keeper -- */
 function keeperAutocomplete() {
-  const q = ($('#keeperSearch').value || '').toLowerCase().trim();
+  const q = queryOf($('#keeperSearch'));
   const box = $('#keeperResults');
   if (q.length < 2) { box.innerHTML = ''; return; }
   const have = new Set(state.keepers.map(k => k.player_id));
-  const hits = BOARD.filter(p => !have.has(p.player_id) && p.name.toLowerCase().includes(q)).slice(0, 10);
+  const hits = BOARD.filter(p => !have.has(p.player_id) && matches(p, q)).slice(0, 10);
   box.innerHTML = hits.map(p =>
     `<div data-add="${p.player_id}">${posBadge(p)} <strong>${esc(p.name)}</strong>
        <span class="pmeta">${esc(p.team)} · ${money(p.auction_value)} · ADP ${p.adp ? fmt(p.adp, 1) : '–'}</span></div>`).join('');
@@ -651,10 +745,13 @@ async function refreshKeeper() {
 async function renderAuction() {
   const inf = Engine.auctionInflation(BOARD, state.sold, lg());
   const goneSet = new Set(state.sold.map(s2 => s2.player_id));
-  const r = { players: BOARD.filter(p => !goneSet.has(p.player_id)).map(p => ({
-    ...p, adjusted_value: p.auction_value * inf.inflation,
-    adjusted_max: p.max_bid * inf.inflation,
-  })).sort((a, b) => b.adjusted_value - a.adjusted_value) };
+  // Sort the RAW rows and apply inflation in the row template instead of
+  // spreading 1127 copies per keystroke. Inflation is a single positive scalar
+  // (clamped to [0.4, 2.5] in engine.js), so multiplying by it cannot change the
+  // ordering — sorting by auction_value is equivalent to sorting by the
+  // inflated value.
+  const r = { players: BOARD.filter(p => !goneSet.has(p.player_id))
+                            .sort((a, b) => b.auction_value - a.auction_value) };
 
   // Your own budget is a different question from the room's, and it is the one
   // that constrains your next bid.
@@ -685,12 +782,14 @@ async function renderAuction() {
     state.sold.splice(Number(b.dataset.unmine), 1); save(); renderAuction();
   });
 
-  const q = ($('#auctionSearch').value || '').toLowerCase().trim();
+  const q = queryOf($('#auctionSearch'));
   let rows = r.players.filter(p => state.auctionPos === 'ALL' || p.position === state.auctionPos);
-  if (q) rows = rows.filter(p => p.name.toLowerCase().includes(q) || (p.team || '').toLowerCase().includes(q));
+  if (q) rows = rows.filter(p => matches(p, q));
 
   $('#auctionTable tbody').innerHTML = rows.slice(0, 250).map(p => {
-    const unaffordable = p.adjusted_value > maxBid;
+    const adjValue = p.auction_value * inf.inflation;
+    const adjMax = p.max_bid * inf.inflation;
+    const unaffordable = adjValue > maxBid;
     return `<tr data-id="${p.player_id}" class="${unaffordable ? 'is-drafted' : ''}"
       ${unaffordable ? 'title="Above your max bid — you cannot fill your roster if you win him at value"' : ''}>
       <td class="left"><strong>${esc(p.name)}</strong> <span class="pmeta">${esc(p.team)}</span></td>
@@ -698,8 +797,8 @@ async function renderAuction() {
       <td><span class="tier-chip">${p.tier ?? '–'}</span></td>
       <td class="c-mid">${fmt(p.points)}</td>
       <td class="c-mid">${fmt(p.vorp)}</td>
-      <td class="money"><strong>${money(p.adjusted_value)}</strong></td>
-      <td class="money edge pos">${money(p.adjusted_max)}</td>
+      <td class="money"><strong>${money(adjValue)}</strong></td>
+      <td class="money edge pos">${money(adjMax)}</td>
       <td><span class="mine-tick">
         <input class="sold-input" type="number" min="1" placeholder="$" data-sold="${p.player_id}">
         <label title="I won him"><input type="checkbox" data-mine="${p.player_id}"> mine</label>
@@ -707,7 +806,8 @@ async function renderAuction() {
     </tr>`;
   }).join('') || '<tr><td colspan="8" class="empty">No players match.</td></tr>';
 
-  $$('[data-sold]').forEach(inp => {
+  const atbody = $('#auctionTable tbody');
+  $$('[data-sold]', atbody).forEach(inp => {
     inp.onclick = e => e.stopPropagation();
     inp.onchange = () => {
       const price = Number(inp.value);
@@ -717,7 +817,17 @@ async function renderAuction() {
       save(); renderAuction();
     };
   });
-  $$('[data-mine]').forEach(cb => { cb.onclick = e => e.stopPropagation(); });
+  $$('[data-mine]', atbody).forEach(cb => {
+    cb.onclick = e => e.stopPropagation();
+    // Recording the price re-renders the table, which wiped the checkbox — so
+    // ticking "mine" after typing the price silently did nothing and your budget
+    // never moved. Now it retro-fits the sale that was just recorded.
+    cb.onchange = e => {
+      e.stopPropagation();
+      const sale = state.sold.find(x => x.player_id === cb.dataset.mine);
+      if (sale) { sale.mine = cb.checked; save(); renderAuction(); }
+    };
+  });
   $$('#auctionTable tbody tr[data-id]').forEach(tr => {
     tr.onclick = () => openPlayer(tr.dataset.id);
   });
@@ -735,7 +845,9 @@ async function renderAuction() {
 
 /* -------------------------------------------------------------- intel -- */
 async function loadCoaching() {
-  const r = TEAMS || (TEAMS = await loadJSON('data/teams.json'));
+  let r;
+  try { r = TEAMS || (TEAMS = await loadJSON('data/teams.json')); }
+  catch (e) { dataError(e, 'team and coaching data'); return; }
   $('#coachGrid').innerHTML = r.teams.map(t => {
     const changed = t.hc_changed || t.oc_changed;
     const prof = t.caller_profile;
@@ -785,7 +897,9 @@ async function loadInjuries() {
 }
 
 async function loadMovers() {
-  const all = await loadJSON('data/movers.json');
+  let all;
+  try { all = await loadJSON('data/movers.json'); }
+  catch (e) { dataError(e, 'ADP movers'); return; }
   const want = { ppr: 'ppr', half_ppr: 'half-ppr', standard: 'standard',
                  superflex: 'ppr', te_premium: 'ppr' }[state.league.scoring] || 'ppr';
   const r = (all.formats || []).find(f => f.fmt === want)
@@ -840,7 +954,10 @@ function showHelp() {
 
 /* ------------------------------------------------------------- drawer -- */
 async function openPlayer(id) {
-  if (!HISTORY) HISTORY = await loadJSON('data/history.json');
+  if (!HISTORY) {
+    try { HISTORY = await loadJSON('data/history.json'); }
+    catch (e) { HISTORY = {}; dataError(e, 'player history'); }
+  }
   const p = BY_ID[id];
   if (!p) return;
   const r = HISTORY[id] || { history: [], injuries: [] };

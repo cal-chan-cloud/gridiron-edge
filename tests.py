@@ -565,6 +565,23 @@ process.stdout.write(JSON.stringify({{board, recs, keep, inf, probs, picks}}));
 
     check("node ran the engine", True, f"{len(js['board'])} players valued in JS")
 
+    # The single most likely way any frontend change silently fails to ship:
+    # app.py serves docs/, not static/, so an edit that is never exported keeps
+    # serving the previous file with no error anywhere.
+    import filecmp
+    for name in ("style.css", "app.js", "engine.js", "gate.js"):
+        src, built = BASE_DIR / "static" / name, BASE_DIR / "docs" / name
+        check(f"docs/{name} matches static/{name} (export is current)",
+              built.exists() and filecmp.cmp(src, built, shallow=False),
+              "run export_static.py" if not (built.exists()
+                                             and filecmp.cmp(src, built, shallow=False)) else "in sync")
+
+    # renderAuction now sorts by raw auction_value and multiplies by inflation in
+    # the row template. That is only order-preserving while inflation is a
+    # positive scalar, so assert the clamp actually holds.
+    check("auction inflation is strictly positive (sort-order equivalence)",
+          js["inf"]["inflation"] > 0, f"{js['inf']['inflation']:.4f}")
+
     # --- board parity
     jsb = {r[0]: r for r in js["board"]}
     worst = {"vorp": 0.0, "auction": 0.0, "max_bid": 0.0}

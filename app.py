@@ -37,9 +37,15 @@ def _ensure_build() -> None:
     meta = DOCS / "data" / "meta.json"
     # An encrypted build has no readable meta.json. Rebuilding over the top of
     # one would silently replace ciphertext with plaintext, so leave it alone.
-    if (DOCS / "data" / "manifest.json").exists():
-        print("Encrypted build present - leaving docs/ untouched.")
-        return
+    manifest = DOCS / "data" / "manifest.json"
+    if manifest.exists():
+        import json as _json
+        try:
+            if _json.loads(manifest.read_text(encoding="utf-8")).get("encrypted"):
+                print("Encrypted build present - leaving docs/ untouched.")
+                return
+        except (ValueError, OSError):
+            pass
     try:
         with db() as conn:
             version = get_meta(conn, "data_version", "0")
