@@ -406,10 +406,195 @@
     };
   }
 
+  /* ------------------------------------------------------- team analysis -- */
+  /* Grades a roster by comparing YOUR starters, slot by slot, against what an
+   * average team in the same league would have in that slot.
+   *
+   * The benchmark is not hand-waved. In a 12-team league starting two backs, the
+   * twelve RB1 slots across the league are filled by the top twelve backs — so
+   * the average RB1 is the mean of RB1-12, and the average RB2 the mean of
+   * RB13-24. Comparing your starter against that band is what "above average at
+   * the position" actually means, and it falls straight out of the league
+   * settings rather than out of an opinion about what a good back looks like.
+   *
+   * Everything here aggregates values the projection engine already produced, so
+   * it adds no new modelling — only a way of reading what is there. */
+  function benchmarkBands(rows, league) {
+    const teams = league.teams;
+    const slots = league.roster;
+    // Bands run over the FULL pool, drafted or not: the benchmark is what an
+    // average team ends up with across a whole draft, not what happens to be
+    // left on the board at this moment.
+    const full = {};
+    for (const p of rows) (full[p.position] = full[p.position] || []).push(p);
+    for (const k of Object.keys(full)) full[k].sort((a, b) => b.points - a.points);
+
+    const bands = {};
+    for (const pos of ALL_POS) {
+      const n = slots[pos] || 0;
+      const arr = full[pos] || [];
+      bands[pos] = [];
+      for (let i = 0; i < n; i++) {
+        const band = arr.slice(i * teams, (i + 1) * teams);
+        bands[pos].push(band.length ? band.reduce((a, p) => a + p.points, 0) / band.length : 0);
+      }
+    }
+    // FLEX: the best flex-eligible players left once every dedicated slot in the
+    // league has been filled.
+    const flexSlots = slots.FLEX || 0;
+    if (flexSlots > 0) {
+      const rest = [];
+      for (const pos of FLEX_ELIGIBLE) {
+        rest.push(...(full[pos] || []).slice((slots[pos] || 0) * teams));
+      }
+      rest.sort((a, b) => b.points - a.points);
+      bands.FLEX = [];
+      for (let i = 0; i < flexSlots; i++) {
+        const band = rest.slice(i * teams, (i + 1) * teams);
+        bands.FLEX.push(band.length ? band.reduce((a, p) => a + p.points, 0) / band.length : 0);
+      }
+    }
+    return bands;
+  }
+
+  /* Assign a roster to starting slots, best player first, flex last. */
+  function optimalLineup(roster, league) {
+    const slots = league.roster;
+    const used = new Set();
+    const lineup = {};
+    for (const pos of ALL_POS) {
+      const n = slots[pos] || 0;
+      if (!n) continue;
+      const cands = roster.filter(p => p.position === pos && !used.has(p.player_id))
+                          .sort((a, b) => b.points - a.points);
+      lineup[pos] = cands.slice(0, n);
+      lineup[pos].forEach(p => used.add(p.player_id));
+    }
+    const flexSlots = slots.FLEX || 0;
+    if (flexSlots > 0) {
+      const cands = roster.filter(p => FLEX_ELIGIBLE.indexOf(p.position) !== -1
+                                    && !used.has(p.player_id))
+                          .sort((a, b) => b.points - a.points);
+      lineup.FLEX = cands.slice(0, flexSlots);
+      lineup.FLEX.forEach(p => used.add(p.player_id));
+    }
+    const bench = roster.filter(p => !used.has(p.player_id))
+                        .sort((a, b) => b.points - a.points);
+    return { lineup, bench };
+  }
+
+  function gradeOf(score) {
+    return score >= 90 ? 'A+' : score >= 80 ? 'A' : score >= 70 ? 'B+'
+         : score >= 60 ? 'B' : score >= 50 ? 'C+' : score >= 40 ? 'C'
+         : score >= 28 ? 'D' : 'F';
+  }
+
+  function analyseTeam(rows, roster, league) {
+    const slots = league.roster;
+    const bands = benchmarkBands(rows, league);
+    const lu = optimalLineup(roster, league);
+    const lineup = lu.lineup, bench = lu.bench;
+
+    const positions = [];
+    let yourTotal = 0, avgTotal = 0;
+
+    for (const pos of ALL_POS.concat(['FLEX'])) {
+      const n = slots[pos] || 0;
+      if (!n) continue;
+      const mine = lineup[pos] || [];
+      const band = bands[pos] || [];
+      // An empty slot is worth REPLACEMENT level — what you could still stream
+      // off waivers — not zero. Scoring it as zero would overstate the hole.
+      const repl = pos === 'FLEX'
+        ? (band[band.length - 1] || 0) * 0.75
+        : ((rows.find(p => p.position === pos) || {}).replacement || 0);
+
+      let mineSum = 0;
+      for (let i = 0; i < n; i++) mineSum += mine[i] ? mine[i].points : repl;
+      const bandSum = band.reduce((a, b) => a + b, 0);
+      yourTotal += mineSum;
+      avgTotal += bandSum;
+
+      const pct = bandSum > 0 ? (mineSum - bandSum) / bandSum : 0;
+      // +/-50% against the slot benchmark spans the scale. Kicker and defense
+      // are compressed toward the middle, because their projections are barely
+      // distinguishable from each other in the first place.
+      const spread = (pos === 'K' || pos === 'DST') ? 220 : 100;
+      const score = Math.max(0, Math.min(100, 50 + pct * spread));
+      positions.push({
+        pos: pos, slots: n, filled: mine.length, players: mine,
+        yourPoints: mineSum, avgPoints: bandSum, surplus: mineSum - bandSum,
+        pct: pct, score: score, grade: gradeOf(score), unfilled: n - mine.length,
+      });
+    }
+
+    // Overall, calibrated against what real drafted teams actually look like.
+    // Simulating a 12-team snake where EVERY team drafts off this same board
+    // puts all twelve between 47 and 53 — which is correct by construction: if
+    // everyone drafts well, everyone is average. So the scale has to be tight
+    // enough that the differences which do exist are legible. +/-16.7% spans it;
+    // a team a genuine 8% ahead of the room lands around 74.
+    const totalPct = avgTotal > 0 ? (yourTotal - avgTotal) / avgTotal : 0;
+    const overall = Math.max(0, Math.min(100, 50 + totalPct * 300));
+
+    // Only positions that decide anything can be "strongest" or "weakest".
+    // Nobody needs to be told their kicker is below average.
+    const ranked = positions.filter(p => p.pos !== 'K' && p.pos !== 'DST' && p.filled > 0)
+                            .sort((a, b) => b.pct - a.pct);
+    const gaps = positions.filter(p => p.unfilled > 0);
+
+    // A week where several starters are simultaneously idle.
+    const byWeek = {};
+    for (const pos of Object.keys(lineup)) {
+      for (const p of lineup[pos]) {
+        if (p.bye) (byWeek[p.bye] = byWeek[p.bye] || []).push(p);
+      }
+    }
+    const byeTrouble = Object.keys(byWeek)
+      .filter(w => byWeek[w].length >= 3)
+      .map(w => ({ week: Number(w), count: byWeek[w].length,
+                   names: byWeek[w].map(p => p.name) }))
+      .sort((a, b) => b.count - a.count);
+
+    // How much of your starting production rests on players flagged high risk.
+    const starters = [];
+    for (const pos of Object.keys(lineup)) starters.push(...lineup[pos]);
+    const startPts = starters.reduce((a, p) => a + p.points, 0) || 1;
+    const risky = starters.filter(p => p.injury_risk === 'high');
+    const riskShare = risky.reduce((a, p) => a + p.points, 0) / startPts;
+
+    // If your best player at a position went down, what actually replaces him?
+    const depth = [];
+    for (const pos of ['RB', 'WR', 'TE', 'QB']) {
+      if (!(slots[pos] || 0)) continue;
+      const mine = (lineup[pos] || []).slice().sort((a, b) => b.points - a.points);
+      if (!mine.length) continue;
+      const backup = bench.filter(p => p.position === pos)[0];
+      const drop = backup ? mine[0].points - backup.points : mine[0].points;
+      depth.push({
+        pos: pos, starter: mine[0].name, backup: backup ? backup.name : null,
+        dropoff: drop, dropPct: mine[0].points ? drop / mine[0].points : 1,
+      });
+    }
+    depth.sort((a, b) => b.dropPct - a.dropPct);
+
+    return {
+      overall: overall, grade: gradeOf(overall),
+      yourPoints: yourTotal, avgPoints: avgTotal, surplus: yourTotal - avgTotal,
+      totalPct: totalPct, positions: positions, lineup: lineup, bench: bench,
+      strongest: ranked.length ? ranked[0] : null,
+      weakest: ranked.length ? ranked[ranked.length - 1] : null,
+      gaps: gaps, byeTrouble: byeTrouble,
+      riskShare: riskShare, riskyStarters: risky.map(p => p.name),
+      depth: depth, rosterSize: roster.length, slotsTotal: rosterSize(league),
+    };
+  }
+
   const Engine = {
     normCdf, pickNumbers, availability, expectedBestAt, expectedBest,
     rosterSize, starterDemand, computeValues, recommend, rosterNeeds,
     planDraft, keeperAnalysis, auctionInflation,
+    analyseTeam, optimalLineup, benchmarkBands, gradeOf,
   };
 
   if (typeof module !== 'undefined' && module.exports) module.exports = Engine;

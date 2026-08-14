@@ -50,6 +50,7 @@
   <button data-tab="snake">Snake Draft</button>
   <button data-tab="keeper">Keeper</button>
   <button data-tab="auction">Auction</button>
+  <button data-tab="myteam">My Team</button>
   <button data-tab="intel">Team &amp; Injury Intel</button>
 </nav>
 
@@ -212,6 +213,44 @@
 
   <h3 class="section-title">Players sold</h3>
   <div id="soldList" class="sold"></div>
+</section>
+
+<!-- =================================================== MY TEAM ======== -->
+<section class="tab" id="tab-myteam" hidden>
+  <div class="explain compact">
+    <p>Every grade compares your starter against <em>the player an average team in
+       your league would have in that exact slot</em>. In a 12-team league starting
+       two backs, the average RB1 is the mean of RB1&ndash;12 and the average RB2 the
+       mean of RB13&ndash;24 &mdash; so "above average at the position" has a precise
+       meaning that falls out of your league settings, not out of an opinion.</p>
+  </div>
+
+  <div id="teamEmpty" class="empty-state" hidden>
+    <h3>No players yet</h3>
+    <p>Draft on the <b>Snake Draft</b> tab, tick <b>mine</b> on the <b>Auction</b> tab,
+       or add <b>Keepers</b> &mdash; this page reads all three and grades whatever you have.</p>
+  </div>
+
+  <div id="teamBody" hidden>
+    <div class="team-head">
+      <div class="score-card" id="teamScore"></div>
+      <div class="verdict-card" id="teamVerdict"></div>
+    </div>
+
+    <h3 class="section-title">Position grades <small>your starters vs an average team's, slot for slot</small></h3>
+    <div class="grade-grid" id="gradeGrid"></div>
+
+    <div class="team-cols">
+      <div>
+        <h3 class="section-title">Starting lineup</h3>
+        <div id="teamLineup" class="lineup"></div>
+      </div>
+      <div>
+        <h3 class="section-title">Risks &amp; depth</h3>
+        <div id="teamRisks" class="risks"></div>
+      </div>
+    </div>
+  </div>
 </section>
 
 <!-- ==================================================== INTEL ========= -->

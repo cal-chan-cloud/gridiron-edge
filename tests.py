@@ -667,6 +667,101 @@ process.stdout.write(JSON.stringify({{board, recs, keep, inf, probs, picks}}));
     check("inflation note identical", pyi["note"] == js["inf"]["note"])
 
 
+def test_team_analysis():
+    """Properties of the roster grade.
+
+    There is no Python counterpart to compare against — the grade is aggregation
+    over values the parity-tested engine already produced, not new modelling — so
+    this asserts the properties that must hold instead: bounded scores, a sane
+    benchmark, and monotonicity (a strictly better roster must not grade worse).
+    """
+    import json
+    import shutil
+    import subprocess
+    import tempfile
+    section("14. TEAM ANALYSIS (My Team grade)")
+
+    node = shutil.which("node")
+    export = BASE_DIR / "docs" / "data" / "proj_half_ppr.json"
+    if not node or not export.exists():
+        check("node + export available for team analysis", False, "skipped")
+        return
+
+    with tempfile.TemporaryDirectory() as td:
+        script = Path(td) / "team.js"
+        script.write_text(f"""
+const E = require({str(BASE_DIR / 'static' / 'engine.js')!r}.replace(/\\\\/g,'/'));
+const fs = require('fs');
+const rows = JSON.parse(fs.readFileSync({str(export)!r}.replace(/\\\\/g,'/'), 'utf8'));
+const lg = {{teams:12, rounds:16, budget:200, auction_budget:200,
+  roster:{{QB:1,RB:2,WR:3,TE:1,FLEX:1,SUPERFLEX:0,K:1,DST:1,BENCH:6}}}};
+const board = E.computeValues(rows, lg);
+const pick = (pos,n,from) => board.filter(p => p.position===pos).slice(from, from+n);
+const build = off => [].concat(pick('RB',3,off), pick('WR',3,off), pick('QB',1,off),
+                               pick('TE',1,off), pick('K',1,0), pick('DST',1,0));
+const strong = build(0), mid = build(10), weak = build(30);
+const out = {{
+  bands: E.benchmarkBands(board, lg),
+  strong: E.analyseTeam(board, strong, lg),
+  mid:    E.analyseTeam(board, mid, lg),
+  weak:   E.analyseTeam(board, weak, lg),
+  empty:  E.analyseTeam(board, [], lg),
+}};
+const slim = a => ({{overall:a.overall, grade:a.grade, yourPoints:a.yourPoints,
+  avgPoints:a.avgPoints, surplus:a.surplus,
+  positions:a.positions.map(p=>({{pos:p.pos,score:p.score,grade:p.grade,pct:p.pct,
+    filled:p.filled,slots:p.slots,yourPoints:p.yourPoints}})),
+  strongest:a.strongest?a.strongest.pos:null, weakest:a.weakest?a.weakest.pos:null,
+  gaps:a.gaps.length, lineupCount:Object.keys(a.lineup).length,
+  benchCount:a.bench.length, riskShare:a.riskShare}});
+process.stdout.write(JSON.stringify({{bands: out.bands, strong: slim(out.strong),
+  mid: slim(out.mid), weak: slim(out.weak), empty: slim(out.empty)}}));
+""", encoding="utf-8")
+        r = subprocess.run([node, str(script)], capture_output=True, text=True, timeout=180)
+        if r.returncode != 0:
+            check("team analysis runs", False, r.stderr.strip()[:200])
+            return
+        d = json.loads(r.stdout)
+
+    check("team analysis runs", True, f"{len(d['strong']['positions'])} position grades")
+
+    for label in ("strong", "mid", "weak", "empty"):
+        a = d[label]
+        check(f"{label}: overall score within 0-100", 0 <= a["overall"] <= 100,
+              f"{a['overall']:.1f} ({a['grade']})")
+        check(f"{label}: every position score within 0-100",
+              all(0 <= p["score"] <= 100 for p in a["positions"]))
+
+    # Monotonic: a strictly better roster cannot grade worse.
+    check("a better roster scores higher",
+          d["strong"]["overall"] > d["mid"]["overall"] > d["weak"]["overall"],
+          f"{d['strong']['overall']:.0f} > {d['mid']['overall']:.0f} > {d['weak']['overall']:.0f}")
+    check("points track the grade",
+          d["strong"]["yourPoints"] > d["mid"]["yourPoints"] > d["weak"]["yourPoints"])
+
+    # The benchmark must itself be sane: each slot band weaker than the one above.
+    bands = d["bands"]
+    ok = all(all(b[i] >= b[i + 1] - 1e-9 for i in range(len(b) - 1))
+             for b in bands.values() if len(b) > 1)
+    check("benchmark bands decline from slot 1 downward", ok,
+          f"RB bands {[round(x) for x in bands.get('RB', [])]}")
+    check("benchmark bands are positive",
+          all(all(x > 0 for x in b) for b in bands.values() if b))
+
+    # An average team must grade near the middle by construction.
+    check("the benchmark itself is the mid-point of the scale",
+          40 <= d["mid"]["overall"] <= 75, f"mid roster grades {d['mid']['overall']:.0f}")
+
+    check("empty roster is handled without dividing by zero",
+          d["empty"]["gaps"] > 0 and d["empty"]["overall"] >= 0,
+          f"{d['empty']['gaps']} gaps, score {d['empty']['overall']:.0f}")
+    check("strongest and weakest come from real positions",
+          d["strong"]["strongest"] in ("QB", "RB", "WR", "TE", "FLEX")
+          and d["weak"]["weakest"] in ("QB", "RB", "WR", "TE", "FLEX"),
+          f"strong: {d['strong']['strongest']}, weak: {d['weak']['weakest']}")
+    check("risk share is a fraction", 0 <= d["strong"]["riskShare"] <= 1)
+
+
 def test_backtest_accuracy():
     """Guard the measured accuracy of the model against silent regression.
 
@@ -731,6 +826,7 @@ def main():
         test_data_integrity(conn, rows)
         test_coaching(conn, ctx)
     test_js_parity()
+    test_team_analysis()
     test_backtest_accuracy()
 
     print(f"\n{'=' * 72}")

@@ -343,11 +343,12 @@ function onKey(e) {
 function showTab(tab) {
   state.tab = tab; save();
   $$('#tabs button').forEach(b => b.classList.toggle('active', b.dataset.tab === tab));
-  ['board','snake','keeper','auction','intel'].forEach(t => $('#tab-' + t).hidden = (t !== tab));
+  ['board','snake','keeper','auction','myteam','intel'].forEach(t => $('#tab-' + t).hidden = (t !== tab));
   if (tab === 'board')   { renderBoard(); syncExport(); }
   if (tab === 'snake')   refreshSnake();
   if (tab === 'keeper')  refreshKeeper();
   if (tab === 'auction') renderAuction();
+  if (tab === 'myteam')  renderMyTeam();
   if (tab === 'intel')   { if (state.sub === 'coaching') loadCoaching();
                            else if (state.sub === 'injuries') loadInjuries(); else loadMovers(); }
 }
@@ -412,6 +413,7 @@ async function refreshBoard() {
   if (state.tab === 'snake')   refreshSnake();
   if (state.tab === 'keeper')  refreshKeeper();
   if (state.tab === 'auction') renderAuction();
+  if (state.tab === 'myteam')  renderMyTeam();
 }
 
 function filteredBoard() {
@@ -635,6 +637,7 @@ function draftPlayer(id, isMine) {
   const p = BY_ID[id];
   toast(`${p ? p.name : 'Player'} ${isMine ? '→ your roster' : 'off the board'}`);
   refreshSnake();
+  if (state.tab === 'myteam') renderMyTeam();
 }
 
 function undoPick() {
@@ -841,6 +844,144 @@ async function renderAuction() {
   $$('[data-unsold]').forEach(b => b.onclick = () => {
     state.sold.splice(Number(b.dataset.unsold), 1); save(); renderAuction();
   });
+}
+
+/* ------------------------------------------------------------ my team -- */
+/* Your roster can come from three places depending on how you draft, so this
+   reads all of them rather than making you pick a mode. */
+function myRoster() {
+  const ids = new Set([
+    ...state.mine,
+    ...state.sold.filter(s2 => s2.mine).map(s2 => s2.player_id),
+    ...state.keepers.map(k => k.player_id),
+  ]);
+  return [...ids].map(id => BY_ID[id]).filter(Boolean);
+}
+
+function renderMyTeam() {
+  const roster = myRoster();
+  $('#teamEmpty').hidden = roster.length > 0;
+  $('#teamBody').hidden = roster.length === 0;
+  if (!roster.length) return;
+
+  const a = Engine.analyseTeam(BOARD, roster, lg());
+  const band = a.overall >= 65 ? 'good' : a.overall >= 42 ? 'mid' : 'bad';
+  const sign = n => (n >= 0 ? '+' : '') + Math.round(n);
+
+  $('#teamScore').className = `score-card ${band}`;
+  $('#teamScore').innerHTML = `
+    <div class="big">${Math.round(a.overall)}</div>
+    <div class="gr">${a.grade}</div>
+    <div class="sub">${Math.round(a.yourPoints)} projected starter points<br>
+      vs ${Math.round(a.avgPoints)} for an average team<br>
+      <strong>${sign(a.surplus)}</strong> (${(a.totalPct * 100).toFixed(1)}%)</div>`;
+
+  // The verdict is the part worth reading: what is good, what is not, what next.
+  const rows = [];
+  if (a.strongest) {
+    rows.push(`<div class="verdict-row"><span class="tag strong">strongest</span>
+      <span><b>${a.strongest.pos}</b> — ${(a.strongest.pct * 100).toFixed(0)}% above an
+      average team's, worth <b>${sign(a.strongest.surplus)}</b> points.
+      ${esc(a.strongest.players.map(p => p.name).join(', '))}</span></div>`);
+  }
+  if (a.weakest && a.weakest !== a.strongest) {
+    // Your weakest position is not necessarily a BAD one — a strong team can be
+    // above average everywhere. Say which of those two situations it is rather
+    // than asserting a deficit that does not exist.
+    const w = a.weakest, wp = (w.pct * 100).toFixed(0);
+    const body = w.pct < 0
+      ? `${Math.abs(wp)}% below an average team's, costing you
+         <b>${Math.round(Math.abs(w.surplus))}</b> points`
+      : `your thinnest spot, though still <b>+${wp}%</b> on an average team's`;
+    rows.push(`<div class="verdict-row"><span class="tag weak">${w.pct < 0 ? 'needs work' : 'thinnest'}</span>
+      <span><b>${w.pos}</b> — ${body}.
+      ${esc(w.players.map(p => p.name).join(', ')) || 'nobody rostered'}</span></div>`);
+  }
+  if (a.gaps.length) {
+    rows.push(`<div class="verdict-row"><span class="tag gap">unfilled</span>
+      <span>${a.gaps.map(g => `<b>${g.unfilled}&times; ${g.pos}</b>`).join(', ')}
+      still to fill. Empty slots are scored at replacement level, not zero.</span></div>`);
+  }
+  // What to do next: the position where the board can help you most.
+  const taken = new Set([...state.taken, ...state.sold.map(s2 => s2.player_id),
+                         ...roster.map(p => p.player_id)]);
+  const target = a.gaps.length ? a.gaps[0].pos : (a.weakest ? a.weakest.pos : null);
+  if (target) {
+    const best = BOARD.filter(p => p.position === target && !taken.has(p.player_id))
+                      .sort((x, y) => y.vorp - x.vorp)[0];
+    if (best) {
+      rows.push(`<div class="verdict-row"><span class="tag next">draft next</span>
+        <span>Best available <b>${target}</b> is <b>${esc(best.name)}</b>
+        (${fmt(best.points)} pts, ${money(best.auction_value)}${best.adp ? ', ADP ' + fmt(best.adp, 1) : ''}).</span></div>`);
+    }
+  }
+  $('#teamVerdict').innerHTML = rows.join('') ||
+    '<div class="verdict-row">Draft a few more players and this will have something to say.</div>';
+
+  $('#gradeGrid').innerHTML = a.positions.map(p => {
+    const cls = p.score >= 75 ? 'a' : p.score >= 55 ? 'b' : p.score >= 38 ? 'c' : 'd';
+    return `<div class="grade-cell ${cls} ${p.filled ? '' : 'empty'}">
+      <div class="hd"><span class="pos">${p.pos}${p.slots > 1 ? ' &times;' + p.slots : ''}</span>
+        <span class="g">${p.grade}</span></div>
+      <div class="pts">${Math.round(p.yourPoints)} vs ${Math.round(p.avgPoints)}
+        &middot; ${sign(p.surplus)}</div>
+      <span class="bar"><i style="width:${Math.round(p.score)}%"></i></span>
+    </div>`;
+  }).join('');
+
+  // Starting lineup, each slot against its own benchmark.
+  const bands = Engine.benchmarkBands(BOARD, lg());
+  const lines = [];
+  for (const p of a.positions) {
+    const band = bands[p.pos] || [];
+    for (let i = 0; i < p.slots; i++) {
+      const pl = p.players[i];
+      const bm = band[i] || 0;
+      if (pl) {
+        const d = pl.points - bm;
+        lines.push(`<div class="lineup-row">
+          <span class="slot">${p.pos}${p.slots > 1 ? (i + 1) : ''}</span>
+          <span class="nm">${esc(pl.name)} <span class="pmeta">${esc(pl.team)}</span></span>
+          <span class="vs ${d >= 0 ? 'up' : 'down'}">${fmt(pl.points)} &middot; ${sign(d)}</span>
+        </div>`);
+      } else {
+        lines.push(`<div class="lineup-row vacant">
+          <span class="slot">${p.pos}${p.slots > 1 ? (i + 1) : ''}</span>
+          <span class="nm">not drafted</span>
+          <span class="vs">avg ${fmt(bm)}</span>
+        </div>`);
+      }
+    }
+  }
+  $('#teamLineup').innerHTML = lines.join('');
+
+  const risks = [];
+  if (a.riskShare > 0.18) {
+    risks.push(`<div class="risk-item bad"><b>${Math.round(a.riskShare * 100)}% of your starting
+      production</b> comes from players flagged high injury risk:
+      ${esc(a.riskyStarters.join(', '))}.</div>`);
+  } else if (a.riskyStarters.length) {
+    risks.push(`<div class="risk-item warn">One high-risk starter:
+      <b>${esc(a.riskyStarters.join(', '))}</b> — ${Math.round(a.riskShare * 100)}% of your
+      starting points.</div>`);
+  } else {
+    risks.push('<div class="risk-item ok">No starter is flagged high injury risk.</div>');
+  }
+  a.byeTrouble.forEach(b => {
+    risks.push(`<div class="risk-item warn"><b>Week ${b.week}:</b> ${b.count} starters on bye
+      (${esc(b.names.join(', '))}). You will be starting replacements that week.</div>`);
+  });
+  const thin = a.depth.filter(d => d.dropPct > 0.55).slice(0, 2);
+  thin.forEach(d => {
+    risks.push(`<div class="risk-item warn">Thin behind <b>${esc(d.starter)}</b> at ${d.pos}:
+      ${d.backup ? `next man is ${esc(d.backup)}, a ${Math.round(d.dropPct * 100)}% drop`
+                 : 'you have no other ' + d.pos}.</div>`);
+  });
+  if (a.bench.length) {
+    risks.push(`<div class="risk-item"><b>Bench:</b>
+      ${esc(a.bench.slice(0, 6).map(p => p.name).join(', '))}${a.bench.length > 6 ? ` +${a.bench.length - 6} more` : ''}.</div>`);
+  }
+  $('#teamRisks').innerHTML = risks.join('');
 }
 
 /* -------------------------------------------------------------- intel -- */
