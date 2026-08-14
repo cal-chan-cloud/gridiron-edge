@@ -260,6 +260,37 @@ def project(conn, scoring_key: str = "half_ppr", team_ctx=None, injuries=None) -
     ngs = {r["gsis_id"]: r for r in conn.execute(
         "SELECT * FROM ngs_rec WHERE season=?", (HISTORY_SEASONS[0],))}
 
+    # Red-zone and goal-line share, recency weighted. Touchdowns are scored from
+    # inside the 20, so in principle share of THAT usage should imply scores
+    # better than share of all touches does.
+    rz_share = {}
+    if feature("redzone_td"):
+        try:
+            tt_rz = {(r["team"], r["season"]): r for r in conn.execute(
+                "SELECT * FROM redzone_team")}
+            acc = defaultdict(lambda: {"c": 0.0, "t": 0.0, "w": 0.0})
+            for r in conn.execute(
+                "SELECT z.*, ps.team FROM redzone z JOIN player_season ps "
+                "ON ps.gsis_id = z.gsis_id AND ps.season = z.season"
+            ):
+                try:
+                    w = SEASON_WEIGHTS[HISTORY_SEASONS.index(r["season"])]
+                except ValueError:
+                    continue
+                tt = tt_rz.get((r["team"], r["season"]))
+                if not tt:
+                    continue
+                a = acc[r["gsis_id"]]
+                if tt["rz_carries"]:
+                    a["c"] += w * (r["rz_carries"] / tt["rz_carries"])
+                if tt["rz_targets"]:
+                    a["t"] += w * (r["rz_targets"] / tt["rz_targets"])
+                a["w"] += w
+            rz_share = {g: {"car": v["c"] / v["w"], "tgt": v["t"] / v["w"]}
+                        for g, v in acc.items() if v["w"] > 0}
+        except Exception:  # noqa: BLE001 - table absent in an old database
+            rz_share = {}
+
     # Recency-weighted snap share per player, keyed by gsis via the pfr bridge.
     snap_pct = {}
     if feature("snap_share"):
@@ -509,7 +540,12 @@ def project(conn, scoring_key: str = "half_ppr", team_ctx=None, injuries=None) -
                 obs_air, _ = _weighted(seasons, "air_share")
                 air_share = obs_air if obs_air is not None else e["tgt_share"]
                 team_pass_td = dropbacks_pg * games * tt["pass_td_rate"]
-                implied_td = team_pass_td * (0.55 * e["tgt_share"] + 0.45 * air_share)
+                rz = rz_share.get(p["gsis_id"]) if feature("redzone_td") else None
+                if rz and rz["tgt"] > 0:
+                    implied_td = team_pass_td * (0.35 * e["tgt_share"] + 0.25 * air_share
+                                                 + 0.40 * rz["tgt"])
+                else:
+                    implied_td = team_pass_td * (0.55 * e["tgt_share"] + 0.45 * air_share)
                 obs_rate, _ = _weighted(seasons, "rec_td_rate")
                 personal_td = targets * (obs_rate if obs_rate is not None else 0.0)
                 w = (TD_PERSONAL_WEIGHT[pos] * min(n_tgt_opp / SHRINK["td_rate_opp"], 1.0)
@@ -540,7 +576,12 @@ def project(conn, scoring_key: str = "half_ppr", team_ctx=None, injuries=None) -
                 team_rush_td = team_carries_pg * games * tt["rush_td_rate"]
                 obs_tds, _ = _weighted(seasons, "rush_td_share")
                 td_share = obs_tds if obs_tds is not None else e["car_share"]
-                implied = team_rush_td * (0.62 * e["car_share"] + 0.38 * td_share)
+                rzr = rz_share.get(p["gsis_id"]) if feature("redzone_td") else None
+                if rzr and rzr["car"] > 0:
+                    implied = team_rush_td * (0.40 * e["car_share"] + 0.20 * td_share
+                                              + 0.40 * rzr["car"])
+                else:
+                    implied = team_rush_td * (0.62 * e["car_share"] + 0.38 * td_share)
                 obs_rate, _ = _weighted(seasons, "rush_td_rate")
                 personal = carries * (obs_rate if obs_rate is not None else 0.0)
                 w = (TD_PERSONAL_WEIGHT.get(pos, 0.3) * min(n_car_opp / SHRINK["td_rate_opp"], 1.0)

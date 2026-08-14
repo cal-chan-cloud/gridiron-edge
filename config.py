@@ -80,6 +80,24 @@ FEATURES = {
                                 # 2026 staff list (10 HC and 21 OC changes). A null
                                 # here is weak evidence about the shipping feature.
 
+    # ENABLED ON A NARROW, HONEST BASIS. Red-zone and goal-line share feeds the
+    # usage-implied half of the touchdown regression. Measured over FIVE held-out
+    # seasons (2021-2025):
+    #   rank correlation  +0.0014 mean, but the sign FLIPS (3 up / 2 down) and a
+    #                     single 2024 outlier (+0.0154) carries the mean. By the
+    #                     standard used everywhere else in this file, that is noise:
+    #                     it does NOT make the draft board better.
+    #   absolute error    -0.24 points, improving in 5 of 5 seasons. Small (0.5%
+    #                     of a ~52 point baseline) but perfectly consistent, and
+    #                     it is points — not ranks — that auction dollars derive
+    #                     from, so this is where it earns its keep.
+    # Worth recording WHY the intuition oversells it: within a season, inside-5
+    # carries correlate 0.87 with rushing touchdowns against 0.65 for total
+    # carries — a huge edge. Across seasons that edge almost vanishes (0.42 vs
+    # 0.40), because the goal-line role changes hands constantly. Red-zone usage
+    # describes what happened far better than it predicts what will happen.
+    "redzone_td": True,
+
     "curated_coaching": True,   # 2026 staff table; off when backtesting a past year
 }
 

@@ -424,6 +424,22 @@ def test_data_integrity(conn, rows):
           stale == ["ARI", "ATL", "BUF"],
           f"genuine disagreements: {stale} (expected exactly ARI/ATL/BUF)")
 
+    from config import feature as _feat
+    if _feat("redzone_td"):
+        rz = conn.execute("SELECT COUNT(*) n FROM redzone WHERE season=?",
+                          (HISTORY_SEASONS[0],)).fetchone()["n"]
+        tm = conn.execute("SELECT COUNT(*) n FROM redzone_team WHERE season=?",
+                          (HISTORY_SEASONS[0],)).fetchone()["n"]
+        check("red-zone usage populated (feature is on)", rz > 300 and tm == 32,
+              f"{rz} players, {tm} teams")
+        # Red-zone carries must be a strict subset of all carries, or the
+        # play-by-play filter has drifted.
+        bad = conn.execute(
+            "SELECT COUNT(*) n FROM redzone z JOIN player_season ps "
+            "ON ps.gsis_id=z.gsis_id AND ps.season=z.season "
+            "WHERE z.rz_carries > ps.carries + 1").fetchone()["n"]
+        check("red-zone carries never exceed total carries", bad == 0, f"{bad} violations")
+
     ranked = sorted(rows, key=lambda x: -x["vorp"])[:150]
     no_adp = [p["name"] for p in ranked if not p.get("adp")]
     check("top-150 by value mostly have live ADP", len(no_adp) <= 25,

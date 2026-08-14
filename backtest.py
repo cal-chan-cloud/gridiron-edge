@@ -273,6 +273,13 @@ def build_state(force=False) -> None:
                            for k, v in agg.items() if v["c"] > 0])
             break
 
+    # --- red-zone usage (prior seasons only)
+    try:
+        from data.redzone import ensure as rz_ensure
+        rz_ensure(c, HISTORY_SEASONS)
+    except Exception as exc:  # noqa: BLE001
+        log(f"  ! redzone unavailable: {exc}")
+
     # --- schedule: byes and coaches for the target year; scores only from before
     games = fetch_csv(f"{NFLVERSE}/schedules/games.csv", ttl_hours=24)
     c.executemany("INSERT OR REPLACE INTO schedule VALUES (" + ",".join("?" * 15) + ")",

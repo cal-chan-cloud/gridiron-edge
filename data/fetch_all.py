@@ -562,6 +562,14 @@ def main(argv=None) -> int:
         fetch_injuries(conn, force=full)
         fetch_adv_rush(conn, force=full)
         fetch_ngs(conn, force=full)
+        # Red-zone usage from play-by-play. Cached per season, so this is a
+        # no-op after the first run; without it the redzone_td feature would
+        # silently fall back to total-usage TD implication.
+        try:
+            from data.redzone import ensure as rz_ensure
+            rz_ensure(conn)
+        except Exception as exc:  # noqa: BLE001
+            log(f"  ! redzone unavailable: {exc}")
         n_adp = fetch_adp(conn, force=True)
         save_adp_snapshot(conn)
 
