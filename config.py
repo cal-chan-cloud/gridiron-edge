@@ -42,64 +42,61 @@ COACH_HISTORY_START = 2012
 # them and measure whether they actually earn their place. Defaults are the
 # shipping configuration. Never guess whether a feature helps — turn it off and
 # score it.
-# Settings below are what backtesting 2023, 2024 and 2025 actually supports.
-# Each number is the mean change in rank correlation when the feature is toggled,
-# across three held-out seasons (`python backtest.py --ablate`). "sign flips"
-# means it helped in some seasons and hurt in others, i.e. it is noise.
+# Settings below are what backtesting FIVE held-out seasons (2021-2025) supports.
+# Each number is the mean change in rank correlation when the feature is toggled.
+# "sign flips" means it helped in some seasons and hurt in others, i.e. noise.
+#
+# READ THIS BEFORE TRUSTING ANY EARLIER NUMBER IN GIT HISTORY. Every ablation
+# result recorded before 2026-08-13 was measured on a broken testbed: nflverse
+# changed the depth-chart schema after 2024, backtest.py only parsed the new
+# format, and FOUR of five reconstructed seasons therefore had ZERO depth-chart
+# ranks — while the depth prior is the single largest input in the model.
+# Fixing it moved the baselines by +0.04 to +0.07 and overturned four verdicts.
+# The lesson generalises: a feature measured against a testbed missing a bigger
+# feature is measuring the hole, not itself.
 FEATURES = {
-    # EARN THEIR PLACE — large, same sign in all three seasons.
-    "td_regression": True,      # -0.0304 when removed. The single biggest input.
-    "availability": True,       # -0.0236 when removed. Projecting games matters.
+    # EARNS ITS PLACE — large, same sign in all five seasons.
+    "td_regression": True,      # -0.0151 when removed. Still the biggest single
+                                # input, and the only one that is unambiguous.
 
-    # SMALL BUT CONSISTENT — same sign in all three seasons.
-    "efficiency_epa": True,     # +0.0034 when added. EPA per opportunity carries
-                                # game state and leverage that raw yardage does not.
-    "ngs_separation": True,     # -0.0022 when removed. Marginal, but never harmful.
+    # HELPS — same sign in all five seasons.
+    "age_curve": True,          # -0.0049 when removed. Previously filed under
+                                # "kept on prior grounds, not evidence" because it
+                                # sign-flipped; with the depth chart present it is
+                                # consistent. The prior was right for the wrong reason.
+
+    # LARGE BUT NOT CLEAN — kept on magnitude.
+    "availability": True,       # -0.0098 mean, negative in 4 of 5 (2023 is +0.0125).
+                                # Big enough to keep despite the flip.
 
     # MEASURED AND REJECTED.
-    "adv_rush_yac": False,      # +0.0018 when REMOVED, same sign 3/3: yards after
-                                # contact consistently cost a little accuracy. It
-                                # duplicates information already in yards per carry.
-    "implied_points": False,    # sign flips (-0.004 / +0.010 / +0.002) and the
-                                # mechanism is thin anyway: in August only ~3 games
-                                # per team have a line posted. Removed as noise.
-    "sos": False,               # exactly 0.0000 mean. Strength of schedule is
-                                # computed and DISPLAYED, but deliberately does not
-                                # feed a projection, because it measurably does not help.
-    "snap_share": False,        # sign flips (+0.018 in 2023, negative in 2024/25).
-                                # Snap share is already implicit in target share.
-
-    # RETAINED ON PRIOR GROUNDS, NOT ON EVIDENCE — stated plainly rather than
-    # dressed up. Three seasons of ~300 players cannot resolve either of these.
-    "age_curve": True,          # sign flips. Kept because the aging effect is well
-                                # established and the sample contains few players at
-                                # the extremes where it bites; it is damped to 55%.
-    "coach_blend": True,        # sign flips, BUT the backtest forces curated_coaching
-                                # off, so it only ever tested the blend mechanism with
-                                # schedule-derived coaches — never the hand-verified
-                                # 2026 staff list (10 HC and 21 OC changes). A null
-                                # here is weak evidence about the shipping feature.
-
-    # ENABLED ON A NARROW, HONEST BASIS. Red-zone and goal-line share feeds the
-    # usage-implied half of the touchdown regression. Measured over FIVE held-out
-    # seasons (2021-2025):
-    #   rank correlation  +0.0014 mean, but the sign FLIPS (3 up / 2 down) and a
-    #                     single 2024 outlier (+0.0154) carries the mean. By the
-    #                     standard used everywhere else in this file, that is noise:
-    #                     it does NOT make the draft board better.
-    #   absolute error    -0.24 points, improving in 5 of 5 seasons. Small (0.5%
-    #                     of a ~52 point baseline) but perfectly consistent, and
-    #                     it is points — not ranks — that auction dollars derive
-    #                     from, so this is where it earns its keep.
-    # Worth recording WHY the intuition oversells it: within a season, inside-5
-    # carries correlate 0.87 with rushing touchdowns against 0.65 for total
-    # carries — a huge edge. Across seasons that edge almost vanishes (0.42 vs
-    # 0.40), because the goal-line role changes hands constantly. Red-zone usage
-    # describes what happened far better than it predicts what will happen.
-    "redzone_td": True,
+    "snap_share": False,        # -0.0131 if enabled: it would actively HURT, in 4 of
+                                # 5 seasons. Its single good season on the old testbed
+                                # was snap share standing in for the depth chart that
+                                # was missing. Emphatically not signal.
+    "efficiency_epa": False,    # -0.0009, sign flips. Enabled earlier on the strength
+                                # of +0.0034 "same sign 3/3" — which was measured
+                                # without depth charts. Reverted.
+    "redzone_td": False,        # +0.0001 rank, and MAE -0.04 with no consistent sign.
+                                # Both justifications evaporated once the depth chart
+                                # was present; the earlier "MAE improves 5/5" was the
+                                # broken testbed. See data/redzone.py for why the
+                                # intuition oversells it so badly.
+    "adv_rush_yac": False,      # -0.0004, sign flips. Noise either way.
+    "implied_points": False,    # -0.0008, sign flips. Also thin by construction.
+    "sos": False,               # -0.0011, sign flips. Computed and DISPLAYED as
+                                # context, deliberately not fed to a projection.
+    "ngs_separation": True,     # -0.0019, sign flips — noise. Left ON only because
+                                # turning it off is equally unsupported and churn for
+                                # its own sake is not an improvement. Free to remove.
+    "coach_blend": True,        # -0.0001, sign flips. The backtest forces
+                                # curated_coaching off, so this only ever tested the
+                                # mechanism, never the hand-verified 2026 staff list
+                                # (10 HC and 21 OC changes). Weak evidence either way.
 
     "curated_coaching": True,   # 2026 staff table; off when backtesting a past year
 }
+
 
 
 def feature(name: str) -> bool:

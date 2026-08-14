@@ -192,7 +192,15 @@ def fetch_depth_charts(conn, force=False) -> int:
         # Offensive slots only; ignore special teams and defensive listings.
         if pos == "QB" and abb != "QB":
             continue
-        if pos == "RB" and abb not in ("RB", "HB", "FB", "TB"):
+        # "FB" is deliberately NOT accepted here. Depth charts list fullbacks on
+        # their own ladder, so a team's FB1 carries pos_rank 1 — and because
+        # norm_pos() folds FB into RB, that made him the RB1 for prior purposes.
+        # Ten teams were handing an undrafted fullback the 0.450 RB1 carry prior;
+        # since the normaliser is zero-sum, those carries came straight out of
+        # the real starter. Baltimore's fullback was projected for 117 carries
+        # and 126 points while Derrick Henry was held to 208. A fullback with
+        # genuine touches still gets them, from his own production history.
+        if pos == "RB" and abb not in ("RB", "HB", "TB"):
             continue
         if pos == "WR" and abb not in ("WR", "LWR", "RWR", "SWR", "WR1", "WR2", "WR3"):
             continue
@@ -211,9 +219,12 @@ def fetch_depth_charts(conn, force=False) -> int:
 
 
 def fetch_player_season(conn, force=False) -> int:
+    """Season production. Covers the INJURY window so the availability model has
+    real games-played for every season it weights; the projection stage ignores
+    the older rows because team_season is only loaded for HISTORY_SEASONS."""
     log("nflverse: player season stats ...")
     total = 0
-    for season in HISTORY_SEASONS:
+    for season in INJURY_SEASONS:
         try:
             rows = fetch_csv(f"{NFLVERSE}/stats_player/stats_player_reg_{season}.csv",
                              ttl_hours=24 * 30, force=force)
@@ -286,9 +297,19 @@ def fetch_team_season(conn, force=False) -> int:
 
 
 def fetch_snaps(conn, force=False) -> int:
+    """Snap counts, over the INJURY window rather than the projection window.
+
+    The availability model weights five seasons, but snaps were only ever
+    fetched for the three projection seasons. The two oldest therefore fell back
+    to an injury-report proxy that overstates availability by a median of 17
+    percentage points — and by more than 25 for 41% of players — because a
+    player placed on IR disappears from the weekly report entirely, so the proxy
+    sees no "Out" designations and concludes he was healthy. That was 22% of the
+    weight resting on a biased estimate.
+    """
     log("nflverse: snap counts ...")
     total = 0
-    for season in HISTORY_SEASONS:
+    for season in INJURY_SEASONS:
         try:
             rows = fetch_csv(f"{NFLVERSE}/snap_counts/snap_counts_{season}.csv",
                              ttl_hours=24 * 30, force=force)
@@ -565,11 +586,16 @@ def main(argv=None) -> int:
         # Red-zone usage from play-by-play. Cached per season, so this is a
         # no-op after the first run; without it the redzone_td feature would
         # silently fall back to total-usage TD implication.
-        try:
-            from data.redzone import ensure as rz_ensure
-            rz_ensure(conn)
-        except Exception as exc:  # noqa: BLE001
-            log(f"  ! redzone unavailable: {exc}")
+        # Only when the feature is on: play-by-play is ~19MB/season and the
+        # feature measured as noise, so it is off by default. The module and the
+        # tables stay, so re-enabling costs one fetch rather than a rewrite.
+        from config import feature as _feat
+        if _feat("redzone_td"):
+            try:
+                from data.redzone import ensure as rz_ensure
+                rz_ensure(conn)
+            except Exception as exc:  # noqa: BLE001
+                log(f"  ! redzone unavailable: {exc}")
         n_adp = fetch_adp(conn, force=True)
         save_adp_snapshot(conn)
 

@@ -112,22 +112,32 @@ def build_state(force=False) -> None:
             except ValueError:
                 pass
 
-    # --- depth chart: the EARLIEST published snapshot, i.e. preseason
+    # --- depth chart, preseason.
+    #
+    # TWO SCHEMAS. nflverse changed the format after 2024:
+    #   2025+  daily snapshots, columns dt / pos_abb / pos_rank (~500k rows)
+    #   <=2024 weekly, columns week / formation / depth_position / depth_team
+    # Parsing only the new one meant FOUR of five backtest seasons silently had
+    # ZERO depth-chart ranks — and the depth prior is the largest single input in
+    # the model. Every ablation result measured before this was fixed was
+    # computed on a testbed missing its most important feature.
     dc = fetch_csv(f"{NFLVERSE}/depth_charts/depth_charts_{TARGET}.csv", ttl_hours=24 * 90)
-    if dc:
+    pos_by = {r["gsis_id"]: r["position"] for r in c.execute(
+        "SELECT gsis_id, position FROM players WHERE gsis_id IS NOT NULL")}
+    best, label = {}, ""
+    if dc and "pos_abb" in dc[0]:
         day = min(s(r.get("dt"))[:10] for r in dc)
-        snap = [r for r in dc if s(r.get("dt", ""))[:10] == day]
-        pos_by = {r["gsis_id"]: r["position"] for r in c.execute(
-            "SELECT gsis_id, position FROM players WHERE gsis_id IS NOT NULL")}
-        best = {}
-        for r in snap:
+        label = f"{day} snapshot"
+        for r in (x for x in dc if s(x.get("dt", ""))[:10] == day):
             g = s(r.get("gsis_id"))
             if g not in pos_by:
                 continue
             p, abb = pos_by[g], s(r.get("pos_abb")).upper()
+            # "FB" excluded on purpose: fullbacks sit on their own ladder, so
+            # accepting it hands a team's FB1 the RB1 prior.
             if p == "QB" and abb != "QB":
                 continue
-            if p == "RB" and abb not in ("RB", "HB", "FB", "TB"):
+            if p == "RB" and abb not in ("RB", "HB", "TB"):
                 continue
             if p == "WR" and abb not in ("WR", "LWR", "RWR", "SWR", "WR1", "WR2", "WR3"):
                 continue
@@ -136,13 +146,35 @@ def build_state(force=False) -> None:
             rank = _i(r.get("pos_rank")) or _i(r.get("pos_slot"))
             if rank > 0 and (g not in best or rank < best[g]):
                 best[g] = rank
-        for g, rank in best.items():
-            c.execute("UPDATE players SET depth_order=? WHERE gsis_id=?", (rank, g))
-        log(f"  depth chart: {day} snapshot, {len(best)} ranks")
+    elif dc:
+        # Legacy: week 1, offence only. depth_team is 1/2/3 and several players
+        # can share a level (three WR1s), so rank sequentially within each
+        # (team, position) group to approximate the newer pos_rank.
+        label = "week 1 (legacy schema)"
+        groups = defaultdict(list)
+        for r in dc:
+            if _i(r.get("week")) != 1 or s(r.get("formation")) != "Offense":
+                continue
+            g = s(r.get("gsis_id"))
+            if g not in pos_by:
+                continue
+            dpos = s(r.get("depth_position")).upper()
+            if dpos != pos_by[g]:
+                continue            # excludes fullbacks listed under RB, as above
+            groups[(s(r.get("club_code")), dpos)].append((_i(r.get("depth_team"), 9), g))
+        for _key, members in groups.items():
+            for rank, (_lvl, g) in enumerate(sorted(members), start=1):
+                if g not in best or rank < best[g]:
+                    best[g] = rank
+    for g, rank in best.items():
+        c.execute("UPDATE players SET depth_order=? WHERE gsis_id=?", (rank, g))
+    log(f"  depth chart: {label}, {len(best)} ranks")
 
-    # --- production history (strictly before the target season)
+    # --- production history (strictly before the target season).
+    # INJURY_SEASONS, not HISTORY_SEASONS: the availability model weights five
+    # seasons and needs real games-played for all of them.
     from data import fetch_all as FA
-    for season in HISTORY_SEASONS:
+    for season in INJURY_SEASONS:
         try:
             src = fetch_csv(f"{NFLVERSE}/stats_player/stats_player_reg_{season}.csv", ttl_hours=24 * 90)
         except FileNotFoundError:
@@ -186,7 +218,7 @@ def build_state(force=False) -> None:
                        for r in src])
 
     # --- snaps and injuries, strictly prior seasons
-    for season in HISTORY_SEASONS:
+    for season in INJURY_SEASONS:
         try:
             src = fetch_csv(f"{NFLVERSE}/snap_counts/snap_counts_{season}.csv", ttl_hours=24 * 90)
         except FileNotFoundError:

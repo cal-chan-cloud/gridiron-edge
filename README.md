@@ -366,59 +366,86 @@ python backtest.py --ablate         # + one run per feature, toggled
 python backtest.py --season 2024
 ```
 
-It rebuilds the state as it existed *before* a season started — week-1 rosters,
-the preseason depth chart, production and injuries from prior years only — then
+It rebuilds the state as it existed *before* a season started - week-1 rosters,
+the preseason depth chart, production and injuries from prior years only - then
 projects that season and compares to what actually happened.
 
-Measured on three held-out seasons:
+Measured on five held-out seasons:
 
-| season | rank correlation | MAE | top-36 hit rate |
-|---|---|---|---|
-| 2025 | 0.627 | 49.8 | 55.6% |
-| 2024 | 0.605 | 54.3 | 41.7% |
-| 2023 | 0.615 | 52.3 | 44.4% |
+| season | rank correlation | MAE |
+|---|---|---|
+| 2025 | 0.629 | 48.9 |
+| 2024 | 0.637 | 52.7 |
+| 2023 | 0.661 | 51.2 |
+| 2022 | 0.712 | 45.4 |
+| 2021 | 0.682 | 47.3 |
+
+### Two bugs that mattered more than every feature combined
+
+**Fullbacks were being handed the RB1 carry prior.** Depth charts list fullbacks
+on their own ladder, so a team's FB1 carries `pos_rank` 1 - and because the
+position normaliser folds FB into RB, that made him the RB1 for prior purposes.
+Ten of 32 teams were affected. Because the share normaliser is zero-sum, those
+carries came straight out of the real starter: Baltimore's undrafted fullback was
+projected for 117 carries and 126 points while Derrick Henry was held to 208.
+562 carries were misallocated league-wide. Fixed by excluding the FB ladder;
+Henry went to 263 carries, Judkins 185 to 220, Hampton 97 to 139.
+
+**Four of five backtest seasons had no depth chart at all.** nflverse changed the
+schema after 2024 - `dt`/`pos_abb`/`pos_rank` from 2025, `week`/`formation`/
+`depth_team` before - and the parser only understood the new one, failing
+silently on the old. The depth prior is the largest single input in the model, so
+**every ablation result measured before this was scoring a testbed with its most
+important feature missing.** Fixing it moved baselines by +0.04 to +0.07 and
+overturned four verdicts. The lesson generalises: a feature measured against a
+testbed missing a bigger feature is measuring the hole, not itself.
 
 ### What each input is actually worth
 
-`--ablate` switches every optional input off (or on) in turn. The numbers below
-are the **mean change in rank correlation across all three seasons**. "Sign
-flips" means it helped in some years and hurt in others, which is noise wearing
-a lab coat.
+Mean change in rank correlation across five seasons, on the corrected testbed:
 
 | input | effect | verdict |
 |---|---|---|
-| TD regression | **−0.0304** when removed | The single most valuable thing in the model |
-| Availability (projected games) | **−0.0236** when removed | Second most valuable |
-| EPA per opportunity | +0.0034 when added, same sign 3/3 | **Enabled** as a result of this |
-| Next Gen separation | −0.0022 when removed, same sign 3/3 | Marginal, never harmful — kept |
-| Yards after contact | +0.0018 when **removed**, same sign 3/3 | **Disabled** — duplicates yards per carry |
-| Market-implied points | sign flips (−0.004 / +0.010 / +0.002) | **Disabled** — only ~3 games priced in August |
-| Snap share | sign flips (+0.018 / −0.002 / −0.005) | Not enabled — already implicit in target share |
-| Strength of schedule | **exactly 0.0000** | Computed and displayed, deliberately not applied |
+| TD regression | **-0.0151** when removed, 5/5 | The biggest single input |
+| Age curve | -0.0049 when removed, 5/5 | Helps - and it previously sign-flipped, so this promotion is *because* of the fix |
+| Availability | -0.0098, negative in 4/5 | Kept on magnitude despite one flip |
+| Snap share | **-0.0131 if enabled** | Would actively hurt. Its one good season was standing in for the missing depth chart |
+| EPA per opportunity | -0.0009, flips | **Reverted.** Enabled earlier on "+0.0034, 3/3" - measured without depth charts |
+| Red-zone / goal-line share | +0.0001 rank, -0.04 MAE, no sign | **Rejected.** Both justifications evaporated (see below) |
+| Yards after contact | -0.0004, flips | Noise either way |
+| Market-implied points | -0.0008, flips | Noise, and thin by construction |
+| Strength of schedule | -0.0011, flips | Computed and displayed as context, never fed to a projection |
 
-Net effect of the reconfiguration: **+0.0009 / +0.0029 / +0.0057** rank
-correlation across the three seasons — better in every one, with three fewer
-moving parts.
+### Red zone: a good idea that measurement killed
 
-Two features are kept **on prior grounds rather than evidence**, and it is worth
-being blunt about which: the **age curve** and the **coaching blend** both show a
-sign flip. The age curve is retained because the effect is well established and
-three seasons of ~300 players contain few players old enough for it to bite. The
-coaching blend is retained because the backtest cannot test it fairly — it forces
-the curated staff table off and falls back to schedule-derived coaches, so it
-only ever measured the mechanism, never this year's hand-verified list of 10
-head-coach and 21 coordinator changes.
+Touchdown regression is the model's most valuable input, and it used *total*
+usage - treating a carry from the two-yard line as equivalent to one from
+midfield. `data/redzone.py` streams play-by-play and extracts carries and targets
+inside the 20 and inside the 5. It is switched **off**, because it does nothing.
 
-**Answering "do we need more metrics?"** — on this evidence, no. Two candidates
-were built and measured (snap share, EPA); only EPA earned its place, and only
-just. The model's accuracy is dominated by opportunity share × team volume ×
-regressed touchdowns. Peripheral metrics are decoration.
+Why the intuition oversells it so badly is the useful part. *Within* a season,
+inside-5 carries correlate **0.87** with rushing touchdowns against **0.65** for
+total carries - an enormous edge, and the reason "red-zone touches" is such a
+popular talking point. *Across* seasons that edge nearly vanishes: **0.42 vs
+0.40**. The goal-line role changes hands constantly. Red-zone usage describes
+what happened far better than it predicts what will happen.
 
-**Answering "is there too much data?"** — yes, some. Three inputs were removed
-above. Beyond that, 17 of 37 stored `player_season` columns are never read, and
-several NGS and advanced-rushing columns are fetched and ignored. They are kept
-because the fetch is cheap and they make future experiments possible without a
-schema change, but nothing downstream depends on them.
+The module and its tables are kept so re-testing costs one fetch rather than a
+rewrite, but the daily job skips the download while the feature is off.
+
+### A correct fix that did not help
+
+The availability model weights five seasons, but snaps and games-played were only
+ever fetched for three. The two oldest fell back to an injury-report proxy that
+overstates availability by a **median of 17 percentage points**, and by more than
+25 for 41% of players - because a player placed on IR disappears from the weekly
+report, so the proxy sees no "Out" designations and concludes he was healthy.
+
+That is a real data defect and it is fixed. It did **not** improve accuracy
+(-0.0015 mean, and a narrower three-season window was no better). Both are within
+noise. The fix is kept because correct data is worth having independent of
+whether one metric can see it - but it is recorded here as a null result rather
+than dressed up as a win.
 
 ## Verifying the arithmetic
 

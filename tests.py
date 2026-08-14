@@ -678,7 +678,11 @@ def test_backtest_accuracy():
     """
     import subprocess
     section("13. BACKTESTED ACCURACY (regression floor)")
-    floors = {2025: 0.60, 2024: 0.58, 2023: 0.59}
+    # Floors sit a little under the measured values so ordinary noise does not
+    # fail the build. Raised on 2026-08-13 after the depth-chart schema fix moved
+    # every baseline by +0.04 to +0.07; the old floors would no longer have
+    # caught a regression that undid it.
+    floors = {2025: 0.615, 2024: 0.625, 2023: 0.640, 2022: 0.690, 2021: 0.660}
     ran = 0
     for season, floor in floors.items():
         if not (BASE_DIR / f"backtest_{season}.db").exists():
