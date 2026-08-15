@@ -165,10 +165,21 @@ SCORING_PRESETS = {
 }
 DEFAULT_SCORING = "half_ppr"
 
-# ADP source format keyed by scoring. FFC only publishes these three.
+# ADP source format keyed by scoring.
+#
+# Superflex MUST NOT fall back to one-QB PPR. The scoring was already right
+# (6-point passing TDs), but pairing it with 1QB ADP told you Josh Allen goes
+# at 28 and Lamar Jackson at 54, when the real 2QB market takes them at 1.5 and
+# 6.5. ADP is not decoration - it feeds availability(), the cost-of-waiting term
+# and the plan - so the board actively steered you off quarterbacks in a format
+# where the QB run is the whole draft. FFC does publish a "2qb" feed.
+#
+# Caveat: FFC's 2QB format mandates two starting QBs, which is marginally hotter
+# on QBs than a true 1QB+superflex room, so treat it as an upper bound on QB
+# aggression - still far closer than one-QB ADP.
 FFC_FORMAT_FOR_SCORING = {
     "ppr": "ppr", "half_ppr": "half-ppr", "standard": "standard",
-    "superflex": "ppr", "te_premium": "ppr",
+    "superflex": "2qb", "te_premium": "ppr",
 }
 
 # --------------------------------------------------------------------------

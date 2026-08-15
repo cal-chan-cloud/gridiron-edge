@@ -16,6 +16,7 @@
   'use strict';
 
   const FLEX_ELIGIBLE = ['RB', 'WR', 'TE'];
+  const SUPERFLEX_ELIGIBLE = ['QB', 'RB', 'WR', 'TE'];
   const ALL_POS = ['QB', 'RB', 'WR', 'TE', 'K', 'DST'];
 
   /* ------------------------------------------------------------ normal -- */
@@ -250,6 +251,14 @@
       for (const pos of FLEX_ELIGIBLE) surplus += Math.max((have[pos] || 0) - (slots[pos] || 0), 0);
       if (surplus < flex) { need.RB += 0.5; need.WR += 0.5; }
     }
+    const sf = slots.SUPERFLEX || 0;
+    if (sf) {
+      let surplus = 0;
+      for (const pos of SUPERFLEX_ELIGIBLE) surplus += Math.max((have[pos] || 0) - (slots[pos] || 0), 0);
+      // In a superflex room the second QB is the scarcest startable asset there
+      // is, so it carries the need rather than splitting it across the flex.
+      if (surplus < sf) need.QB += 0.9;
+    }
     return need;
   }
 
@@ -454,6 +463,24 @@
         bands.FLEX.push(band.length ? band.reduce((a, p) => a + p.points, 0) / band.length : 0);
       }
     }
+    // SUPERFLEX: QB-inclusive, and what is left after the dedicated slots AND
+    // the flex have taken their share. In a superflex league this band is
+    // dominated by QB2s, which is exactly the point.
+    const sfSlots = slots.SUPERFLEX || 0;
+    if (sfSlots > 0) {
+      const rest = [];
+      for (const pos of SUPERFLEX_ELIGIBLE) {
+        const consumed = (slots[pos] || 0) * teams
+          + (FLEX_ELIGIBLE.indexOf(pos) !== -1 ? (slots.FLEX || 0) * teams : 0);
+        rest.push(...(full[pos] || []).slice(consumed));
+      }
+      rest.sort((a, b) => b.points - a.points);
+      bands.SUPERFLEX = [];
+      for (let i = 0; i < sfSlots; i++) {
+        const band = rest.slice(i * teams, (i + 1) * teams);
+        bands.SUPERFLEX.push(band.length ? band.reduce((a, p) => a + p.points, 0) / band.length : 0);
+      }
+    }
     return bands;
   }
 
@@ -478,6 +505,16 @@
       lineup.FLEX = cands.slice(0, flexSlots);
       lineup.FLEX.forEach(p => used.add(p.player_id));
     }
+    // SUPERFLEX is filled after FLEX and is QB-eligible. Skipped entirely when
+    // the league has no superflex slot, so the one-QB path is untouched.
+    const sfSlots = slots.SUPERFLEX || 0;
+    if (sfSlots > 0) {
+      const cands = roster.filter(p => SUPERFLEX_ELIGIBLE.indexOf(p.position) !== -1
+                                    && !used.has(p.player_id))
+                          .sort((a, b) => b.points - a.points);
+      lineup.SUPERFLEX = cands.slice(0, sfSlots);
+      lineup.SUPERFLEX.forEach(p => used.add(p.player_id));
+    }
     const bench = roster.filter(p => !used.has(p.player_id))
                         .sort((a, b) => b.points - a.points);
     return { lineup, bench };
@@ -498,14 +535,14 @@
     const positions = [];
     let yourTotal = 0, avgTotal = 0;
 
-    for (const pos of ALL_POS.concat(['FLEX'])) {
+    for (const pos of ALL_POS.concat(['FLEX', 'SUPERFLEX'])) {
       const n = slots[pos] || 0;
       if (!n) continue;
       const mine = lineup[pos] || [];
       const band = bands[pos] || [];
       // An empty slot is worth REPLACEMENT level — what you could still stream
       // off waivers — not zero. Scoring it as zero would overstate the hole.
-      const repl = pos === 'FLEX'
+      const repl = (pos === 'FLEX' || pos === 'SUPERFLEX')
         ? (band[band.length - 1] || 0) * 0.75
         : ((rows.find(p => p.position === pos) || {}).replacement || 0);
 

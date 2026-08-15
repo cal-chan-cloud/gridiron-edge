@@ -49,7 +49,7 @@ def main() -> int:
         else:
             notes.append(f"{n_games} scheduled games")
 
-        for fmt in ("ppr", "half-ppr", "standard"):
+        for fmt in ("ppr", "half-ppr", "standard", "2qb"):
             row = conn.execute(
                 "SELECT COUNT(*) n, MAX(window_end) we, MAX(total_drafts) td "
                 "FROM adp WHERE fmt=?", (fmt,)).fetchone()

@@ -24,6 +24,15 @@ let BOARD = [];        // current valued board
 let BY_ID = {};
 let LAST_RECS = [];    // for keyboard drafting
 let busy = 0;
+let MINE_PENDING = null;  // see the auction "mine" handler
+
+/* A player is off the board if ANYONE took him, and an auction sale is exactly
+   that. The Board, Pool and Scarcity views used to read state.taken alone, so a
+   player bought in the auction still showed as available everywhere except the
+   auction tab itself - the one view where you already knew he was gone. */
+function goneIds() {
+  return new Set([...state.taken, ...state.sold.map(s => s.player_id)]);
+}
 
 /* The daily build writes plain JSON; every league-dependent number is computed
    here by engine.js. Same files locally and on GitHub Pages, so there is one
@@ -185,6 +194,7 @@ async function boot() {
   $('#rounds').value = state.league.rounds;
   $('#budget').value = state.league.budget;
   $('#hideDrafted').checked = state.hideDrafted;
+  $('#reversal').checked = !!state.reversal;
 
   $('#rosterGrid').innerHTML = ['QB','RB','WR','TE','FLEX','SUPERFLEX','K','DST','BENCH']
     .map(k => `<label>${k === 'SUPERFLEX' ? 'SFLEX' : k}<input type="number" min="0" max="10"
@@ -195,6 +205,11 @@ async function boot() {
   wire();
   buildSlotButtons();
   $$('#posFilter button').forEach(b => b.classList.toggle('active', b.dataset.pos === state.pos));
+  // These two were persisted but their highlight was not restored, so after a
+  // reload the list sat silently filtered to one position while "All" looked
+  // selected - mid-draft that reads as "there are no RBs left".
+  $$('#poolPosFilter button').forEach(b => b.classList.toggle('active', b.dataset.pos === state.poolPos));
+  $$('#auctionPosFilter button').forEach(b => b.classList.toggle('active', b.dataset.pos === state.auctionPos));
   showTab(state.tab || 'board');
   await refreshBoard();
 }
@@ -316,6 +331,9 @@ function wire() {
    hunting for a button: focus search, and draft straight off the recommendation
    list by number. */
 function onKey(e) {
+  // Holding a number key auto-repeats, and every repeat drafted another player.
+  // One keypress must mean one pick.
+  if (e.repeat) return;
   if (e.key === 'Escape') { $('#drawer').hidden = true; return; }
   const typing = /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement.tagName);
   if (e.key === '/' && !typing) {
@@ -419,7 +437,7 @@ async function refreshBoard() {
 function filteredBoard() {
   const q = queryOf($('#boardSearch'));
   const hide = $('#hideRisk').checked;
-  const taken = new Set(state.taken);
+  const taken = goneIds();
   let rows = BOARD.filter(p => state.pos === 'ALL' || p.position === state.pos);
   if (q) rows = rows.filter(p => matches(p, q));
   if (hide) rows = rows.filter(p => p.injury_risk !== 'high');
@@ -467,7 +485,7 @@ function renderBoard() {
   $$('#boardTable thead th').forEach(th => th.classList.toggle('sorted', th.dataset.sort === state.sort.key));
   const all = filteredBoard();
   const rows = all.slice(0, 400);
-  const taken = new Set(state.taken), mineSet = new Set(state.mine);
+  const taken = goneIds(), mineSet = new Set(state.mine);
 
   // Tier separators only make sense within one position (tiers are per-position)
   // and only when the board is ordered by value. Sorted by ADP or name they
@@ -479,7 +497,12 @@ function renderBoard() {
   let html = '', lastTier = null;
   for (const p of rows) {
     if (showTiers && p.tier !== lastTier) {
-      const left = all.filter(x => x.tier === p.tier && !taken.has(x.player_id)).length;
+      // Count from the WHOLE board, not the filtered view. Counting `all` meant
+      // typing in the search box invented scarcity: filter down to one name and
+      // every tier reads "last one - the drop after him is real", which is the
+      // single most pick-changing sentence on the page.
+      const left = BOARD.filter(x => x.position === p.position && x.tier === p.tier
+                                     && !taken.has(x.player_id)).length;
       const lastOne = left === 1;
       html += `<tr class="tier-break ${lastOne ? 'last-one' : ''}"><td colspan="14">
         <div class="tb"><span>Tier ${p.tier}</span>
@@ -524,7 +547,7 @@ async function refreshSnake() {
   const nDone = state.taken.length;
   const myPick = picks.find(p => p > nDone) || null;
   const nextPick = myPick ? (picks.find(p => p > myPick) || null) : null;
-  const takenSet = new Set(state.taken);
+  const takenSet = goneIds();
   const roster = state.mine.map(id => BY_ID[id]).filter(Boolean);
   const available = BOARD.filter(p => !takenSet.has(p.player_id));
   const r = {
@@ -592,7 +615,7 @@ function renderMyRoster(roster) {
 /* How thin is each position right now? "3 left at this grade" is the number
    that decides whether to take a position now or wait a round. */
 function renderScarcity() {
-  const taken = new Set(state.taken);
+  const taken = goneIds();
   const avail = BOARD.filter(p => !taken.has(p.player_id));
   const html = ['QB','RB','WR','TE'].map(pos => {
     const arr = avail.filter(p => p.position === pos).sort((a, b) => b.vorp - a.vorp);
@@ -612,7 +635,7 @@ function renderScarcity() {
 
 function renderPool() {
   const q = queryOf($('#poolSearch'));
-  const taken = new Set(state.taken);
+  const taken = goneIds();
   let rows = BOARD.filter(p => !taken.has(p.player_id));
   if (state.poolPos !== 'ALL') rows = rows.filter(p => p.position === state.poolPos);
   if (q) rows = rows.filter(p => matches(p, q));
@@ -816,10 +839,27 @@ async function renderAuction() {
       const price = Number(inp.value);
       if (!price || price < 1) return;
       const mineBox = $(`[data-mine="${CSS.escape(inp.dataset.sold)}"]`);
-      state.sold.push({ player_id: inp.dataset.sold, price, mine: !!(mineBox && mineBox.checked) });
+      // MINE_PENDING covers the click that is happening right now: ticking
+      // "mine" is itself what blurs this input, so mousedown has fired but the
+      // checkbox is not `checked` yet and its own change event never arrives
+      // (the re-render below destroys the row mid-click).
+      const mine = !!(mineBox && mineBox.checked) || MINE_PENDING === inp.dataset.sold;
+      MINE_PENDING = null;
+      state.sold.push({ player_id: inp.dataset.sold, price, mine });
       save(); renderAuction();
     };
   });
+  // Capture phase, on the tbody, so it also catches a click on the word "mine"
+  // (the label) rather than the box itself. mousedown lands BEFORE the price
+  // input's blur, which is the whole point - by the time any change event
+  // fires, this row no longer exists.
+  atbody.addEventListener('mousedown', e => {
+    const lbl = e.target.closest && e.target.closest('.mine-tick label');
+    if (!lbl) return;
+    const box = lbl.querySelector('[data-mine]');
+    if (box) MINE_PENDING = box.dataset.mine;
+  }, true);
+
   $$('[data-mine]', atbody).forEach(cb => {
     cb.onclick = e => e.stopPropagation();
     // Recording the price re-renders the table, which wiped the checkbox — so
@@ -905,13 +945,27 @@ function renderMyTeam() {
   // What to do next: the position where the board can help you most.
   const taken = new Set([...state.taken, ...state.sold.map(s2 => s2.player_id),
                          ...roster.map(p => p.player_id)]);
-  const target = a.gaps.length ? a.gaps[0].pos : (a.weakest ? a.weakest.pos : null);
+  // gaps arrive in fixed slot order (QB,RB,WR,TE,K,DST,FLEX), so an empty
+  // kicker slot outranked an empty FLEX and the tab told you to draft a kicker
+  // in round 3. Fill the positions that decide leagues first, and only fall
+  // through to K/DST once nothing else is open.
+  const ORDER = { RB: 0, WR: 1, QB: 2, TE: 3, SUPERFLEX: 4, FLEX: 5, DST: 8, K: 9 };
+  const gaps = a.gaps.slice().sort((x, y) => (ORDER[x.pos] ?? 6) - (ORDER[y.pos] ?? 6));
+  const target = gaps.length ? gaps[0].pos : (a.weakest ? a.weakest.pos : null);
   if (target) {
-    const best = BOARD.filter(p => p.position === target && !taken.has(p.player_id))
+    // FLEX and SUPERFLEX are slots, not positions - no player has position
+    // "FLEX", so this used to match nothing and the whole line disappeared
+    // exactly when the only thing left open was your flex.
+    const eligible = target === 'FLEX' ? ['RB', 'WR', 'TE']
+                   : target === 'SUPERFLEX' ? ['QB', 'RB', 'WR', 'TE']
+                   : [target];
+    const label = target === 'FLEX' || target === 'SUPERFLEX'
+                ? target + ' (' + eligible.join('/') + ')' : target;
+    const best = BOARD.filter(p => eligible.indexOf(p.position) !== -1 && !taken.has(p.player_id))
                       .sort((x, y) => y.vorp - x.vorp)[0];
     if (best) {
       rows.push(`<div class="verdict-row"><span class="tag next">draft next</span>
-        <span>Best available <b>${target}</b> is <b>${esc(best.name)}</b>
+        <span>Best available <b>${label}</b> is <b>${esc(best.name)}</b>
         (${fmt(best.points)} pts, ${money(best.auction_value)}${best.adp ? ', ADP ' + fmt(best.adp, 1) : ''}).</span></div>`);
     }
   }
@@ -1042,7 +1096,7 @@ async function loadMovers() {
   try { all = await loadJSON('data/movers.json'); }
   catch (e) { dataError(e, 'ADP movers'); return; }
   const want = { ppr: 'ppr', half_ppr: 'half-ppr', standard: 'standard',
-                 superflex: 'ppr', te_premium: 'ppr' }[state.league.scoring] || 'ppr';
+                 superflex: '2qb', te_premium: 'ppr' }[state.league.scoring] || 'ppr';
   const r = (all.formats || []).find(f => f.fmt === want)
             || { movers: [], note: 'No ADP history yet.' };
   if (!r.movers.length) {

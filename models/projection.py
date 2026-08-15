@@ -609,6 +609,13 @@ def project(conn, scoring_key: str = "half_ppr", team_ctx=None, injuries=None) -
             # Kicker scoring tracks team scoring closely and nothing else does.
             ppg = c.get("exp_ppg") or 22.5
             pts_pg = 8.2 * (ppg / 22.5)
+            # A team kicks one kicker. Without this every kicker on a roster got
+            # the identical score, so camp-leg #2 tied - and could sort above -
+            # the actual starter. Unlisted (depth 0) is treated as the starter,
+            # because the K depth chart is often simply not published.
+            k_depth = e.get("depth") or 0
+            if k_depth > 1:
+                pts_pg *= 0.18
             return_row = _finish(p, pos, team, c, prof, games, pts_pg * games,
                                  notes + ["Kicker output tracks team scoring; "
                                           "inherently high variance"], e, scoring_key)
