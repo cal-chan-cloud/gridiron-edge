@@ -80,6 +80,11 @@ def index():
     return send_from_directory(DOCS, "index.html")
 
 
+@app.route("/auction.html")
+def auction_sheet():
+    return send_from_directory(DOCS, "auction.html")
+
+
 @app.route("/<path:filename>")
 def static_file(filename):
     target = (DOCS / filename).resolve()

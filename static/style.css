@@ -726,3 +726,9 @@ kbd {
 .risk-item.warn { border-left: 3px solid var(--warn); }
 .risk-item.bad  { border-left: 3px solid var(--bad); }
 .risk-item.ok   { border-left: 3px solid var(--good); }
+
+/* The auction print sheet opens in its own tab; styled as a button so it does
+   not read as body text sitting in a toolbar. */
+.btnlink {
+  display:inline-flex; align-items:center; text-decoration:none;
+}

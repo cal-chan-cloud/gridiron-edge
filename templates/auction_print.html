@@ -1,0 +1,288 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Auction Sheet &middot; Gridiron Edge</title>
+<style>
+/* Printed on paper, used under time pressure with a pen in one hand. Everything
+   here serves that: black on white, dense rows, and the two numbers that
+   actually decide a bid - target and max - given the most visual weight. */
+:root { --line:#c8ccd2; --ink:#111; --mut:#666; --band:#f1f3f6; }
+* { box-sizing:border-box; }
+html,body { margin:0; padding:0; }
+body {
+  font:11px/1.32 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  color:var(--ink); background:#fff; padding:16px;
+}
+h1 { font-size:19px; margin:0 0 2px; letter-spacing:-.2px; }
+h2 { font-size:13px; margin:0 0 5px; text-transform:uppercase; letter-spacing:.7px;
+     border-bottom:2px solid var(--ink); padding-bottom:2px; }
+.sub { color:var(--mut); font-size:10px; }
+
+.toolbar { position:sticky; top:0; background:#fff; padding:8px 0 12px; margin-bottom:8px;
+           border-bottom:1px solid var(--line); display:flex; gap:8px; align-items:center;
+           flex-wrap:wrap; z-index:5; }
+.toolbar button { font:inherit; font-weight:600; padding:7px 14px; border:1px solid #333;
+  background:#111; color:#fff; border-radius:5px; cursor:pointer; }
+.toolbar button.alt { background:#fff; color:#111; }
+.toolbar label { font-size:11px; color:var(--mut); display:flex; align-items:center; gap:4px; }
+
+.head { display:flex; justify-content:space-between; align-items:flex-end;
+        border-bottom:2px solid var(--ink); padding-bottom:5px; margin-bottom:9px; }
+.cfg { font-size:10px; color:var(--mut); text-align:right; line-height:1.5; }
+.cfg b { color:var(--ink); }
+
+.grid2 { display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-bottom:12px; }
+
+table { width:100%; border-collapse:collapse; }
+thead { display:table-header-group; }
+th { text-align:left; font-size:8.5px; text-transform:uppercase; letter-spacing:.5px;
+     color:var(--mut); border-bottom:1px solid var(--ink); padding:2px 3px; font-weight:700; }
+td { padding:1.6px 3px; border-bottom:1px solid #e8eaee; vertical-align:baseline; }
+tr { break-inside:avoid; page-break-inside:avoid; }
+tbody tr:nth-child(even) { background:var(--band); }
+.num { text-align:right; font-variant-numeric:tabular-nums; }
+.nm { font-weight:600; }
+.tm { color:var(--mut); font-size:9px; }
+.tgt { font-weight:700; font-size:12px; text-align:right; font-variant-numeric:tabular-nums; }
+.max { text-align:right; font-variant-numeric:tabular-nums; color:#444; }
+.box { width:9px; height:9px; border:1px solid #999; display:inline-block; }
+.risk-high { font-weight:700; }
+.tierrow td { background:#e3e7ed !important; font-size:8.5px; font-weight:700;
+              text-transform:uppercase; letter-spacing:.6px; padding:2.5px 3px;
+              border-top:1px solid #99a; border-bottom:1px solid #99a; }
+
+.pos-sec { margin-bottom:13px; }
+.pos-sec.newpage { break-before:page; page-break-before:always; }
+
+.card { border:1px solid var(--line); border-radius:4px; padding:8px 9px; }
+.card h3 { margin:0 0 6px; font-size:10px; text-transform:uppercase; letter-spacing:.7px;
+           color:var(--mut); }
+.slots { display:grid; grid-template-columns:auto 1fr auto; gap:2px 6px; font-size:10px;
+         align-items:center; }
+.slots .lbl { font-weight:700; }
+.slots .wr { border-bottom:1px solid #bbb; height:13px; }
+.money-line { display:flex; justify-content:space-between; font-size:10px;
+              padding:2.5px 0; border-bottom:1px solid #e8eaee; }
+.money-line b { font-variant-numeric:tabular-nums; }
+.rules { font-size:9.5px; color:#333; line-height:1.5; margin:6px 0 0; padding-left:14px; }
+.rules li { margin-bottom:2.5px; }
+.dollar-strip { font-size:9.5px; line-height:1.65; margin-bottom:2px; }
+.dollar-strip b { display:inline-block; min-width:30px; }
+.foot { margin-top:10px; padding-top:5px; border-top:1px solid var(--line);
+        font-size:9px; color:var(--mut); }
+
+@media print {
+  body { padding:0; font-size:9.4px; }
+  .toolbar, .noprint { display:none !important; }
+  h1 { font-size:16px; }
+  tbody tr:nth-child(even) { background:#f4f5f7 !important; }
+  .tierrow td { background:#e3e7ed !important; }
+  a { text-decoration:none; color:inherit; }
+}
+@page { size:letter portrait; margin:0.42in; }
+</style>
+</head>
+<body>
+
+<div class="toolbar noprint">
+  <button onclick="window.print()">Print / Save as PDF</button>
+  <a href="index.html"><button class="alt" type="button">&larr; Back to the site</button></a>
+  <label><input type="checkbox" id="optSold" checked> grey out players already sold</label>
+  <label>depth
+    <select id="optDepth">
+      <option value="normal">standard</option>
+      <option value="deep">deep (more $1 targets)</option>
+      <option value="tight">tight (starters only)</option>
+    </select>
+  </label>
+  <span class="sub" id="status">Loading&hellip;</span>
+</div>
+
+<div id="sheet"></div>
+
+<script src="/static/gate.js"></script>
+<script src="/static/engine.js"></script>
+<script>
+/* This page shares nothing with app.js except the payload and the engine, but it
+   reads the SAME saved league settings. A printout computed off different
+   settings than the live board would be worse than no printout at all. */
+'use strict';
+const $ = s => document.querySelector(s);
+const STORE = 'gridiron.v1';
+const DEFAULTS = { scoring:'half_ppr', teams:12, rounds:16, budget:200,
+  roster:{ QB:1,RB:2,WR:3,TE:1,FLEX:1,SUPERFLEX:0,K:1,DST:1,BENCH:6 } };
+
+let SAVED = {}, BOARD = [], META = null;
+
+function loadState() {
+  try { return JSON.parse(localStorage.getItem(STORE)) || {}; } catch (e) { return {}; }
+}
+function league() {
+  const l = Object.assign({}, DEFAULTS, SAVED.league || {});
+  l.roster = Object.assign({}, DEFAULTS.roster, (SAVED.league || {}).roster || {});
+  l.auction_budget = l.budget;
+  return l;
+}
+function rosterSize(l) {
+  return Object.keys(l.roster).reduce((a, k) => a + (l.roster[k] || 0), 0);
+}
+const esc = s => String(s == null ? '' : s).replace(/[&<>"]/g,
+  c => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;' }[c]));
+const money = v => '$' + Math.max(1, Math.round(v || 0));
+
+/* An auction is not a snake - anyone can end up on your roster, so the sheet has
+   to run deeper than a draft board without ceasing to fit on paper. */
+const DEPTH = {
+  tight:  { QB:16, RB:34, WR:42, TE:16, K:8,  DST:8  },
+  normal: { QB:26, RB:52, WR:62, TE:24, K:14, DST:14 },
+  deep:   { QB:34, RB:70, WR:84, TE:32, K:20, DST:20 },
+};
+const POS_NAME = { QB:'Quarterbacks', RB:'Running Backs', WR:'Wide Receivers',
+                   TE:'Tight Ends', K:'Kickers', DST:'Defenses' };
+const ORDER = ['RB', 'WR', 'QB', 'TE', 'DST', 'K'];
+
+function render() {
+  const l = league();
+  const depth = DEPTH[$('#optDepth').value] || DEPTH.normal;
+  const greySold = $('#optSold').checked;
+  const sold = new Map((SAVED.sold || []).map(s => [s.player_id, s]));
+  const keepers = new Set((SAVED.keepers || []).map(k => k.player_id));
+
+  const rows = Engine.computeValues(BOARD, l);
+  const byPos = {};
+  for (const p of rows) (byPos[p.position] = byPos[p.position] || []).push(p);
+
+  const totalPool = l.teams * l.budget;
+  const slots = rosterSize(l);
+  const mySold = (SAVED.sold || []).filter(s => s.mine);
+  const spent = mySold.reduce((a, s) => a + (+s.price || 0), 0);
+  const presetName = (META && META.scoring_presets && META.scoring_presets[l.scoring]) || l.scoring;
+
+  let html = '<div class="head"><div><h1>Auction Sheet</h1>' +
+    '<div class="sub">Gridiron Edge &middot; built ' + esc((META && META.last_fetch) || '') +
+    (META && META.adp_window ? ' &middot; ADP through ' + esc(META.adp_window[1]) : '') +
+    '</div></div><div class="cfg"><b>' + l.teams + '</b> teams &middot; <b>$' + l.budget +
+    '</b> each &middot; pool <b>$' + totalPool + '</b><br>' + esc(presetName) +
+    ' &middot; <b>' + slots + '</b> roster spots<br>' +
+    Object.keys(l.roster).filter(k => l.roster[k]).map(k => k + ':' + l.roster[k]).join('&nbsp; ') +
+    '</div></div>';
+
+  // ---- worksheet: the budget arithmetic you otherwise do in your head, badly
+  html += '<div class="grid2"><div class="card"><h3>Your budget</h3>' +
+    '<div class="money-line"><span>Starting budget</span><b>$' + l.budget + '</b></div>' +
+    '<div class="money-line"><span>Spent so far</span><b>' + (spent ? '$' + spent : '$______') + '</b></div>' +
+    '<div class="money-line"><span>Left</span><b>' + (spent ? '$' + (l.budget - spent) : '$______') + '</b></div>' +
+    '<div class="money-line"><span>Spots left</span><b>' + (mySold.length ? (slots - mySold.length) : '______') + '</b></div>' +
+    '<div class="money-line"><span><b>Max bid</b> = left &minus; (spots left &minus; 1)</span><b>$______</b></div>' +
+    '<ul class="rules"><li>Every remaining spot still needs $1. That is the whole formula.</li>' +
+    '<li>Par is <b>$' + (totalPool / slots).toFixed(2) + '</b> per roster spot.</li></ul></div>';
+
+  html += '<div class="card"><h3>Roster</h3><div class="slots">';
+  for (const k of ['QB','RB','WR','TE','FLEX','SUPERFLEX','K','DST','BENCH']) {
+    for (let i = 0; i < (l.roster[k] || 0); i++) {
+      html += '<span class="lbl">' + (k === 'SUPERFLEX' ? 'SFLX' : k) + '</span>' +
+              '<span class="wr"></span><span class="tm">$____</span>';
+    }
+  }
+  html += '</div></div></div>';
+
+  html += '<div class="card noprint" style="margin-bottom:12px"><h3>How to read this</h3><ul class="rules">' +
+    '<li><b>Target</b> is what the player is worth in this league at list price. Paying it is fine.</li>' +
+    '<li><b>Max</b> is the ceiling. Above it you are buying points you cannot afford to field a roster around.</li>' +
+    '<li>Tier lines are where the drop is real. The last player in a tier is worth a premium; the first of the next one is not.</li>' +
+    '<li>If the room overspends early, everything later goes cheap - hold cash and let it come to you.</li></ul></div>';
+
+  // ---- position tables
+  let first = true;
+  for (const pos of ORDER) {
+    const all = (byPos[pos] || []).slice(0, depth[pos] || 30);
+    if (!all.length) continue;
+    const counts = {};
+    for (const p of all) counts[p.tier] = (counts[p.tier] || 0) + 1;
+
+    html += '<div class="pos-sec' + (first ? '' : (pos === 'WR' || pos === 'QB' ? ' newpage' : '')) + '">' +
+      '<h2>' + POS_NAME[pos] + '<span style="float:right;font-weight:400;text-transform:none;' +
+      'letter-spacing:0;color:var(--mut)">' + all.length + ' listed</span></h2>' +
+      '<table><thead><tr>' +
+      '<th style="width:13px"></th><th>Player</th><th style="width:26px">Tm</th>' +
+      '<th class="num" style="width:22px">Bye</th>' +
+      '<th class="num" style="width:34px">Pts</th>' +
+      '<th class="num" style="width:34px">VORP</th>' +
+      '<th class="num" style="width:32px">ADP</th>' +
+      '<th class="num" style="width:42px">Target</th>' +
+      '<th class="num" style="width:34px">Max</th>' +
+      '<th style="width:32px">Risk</th>' +
+      '<th style="width:56px">Paid</th></tr></thead><tbody>';
+
+    let lastTier = null;
+    for (const p of all) {
+      if (p.tier !== lastTier) {
+        const n = counts[p.tier] || 0;
+        html += '<tr class="tierrow"><td colspan="11">Tier ' + (p.tier == null ? '&ndash;' : p.tier) +
+                ' &middot; ' + n + ' player' + (n === 1 ? '' : 's') + ' here</td></tr>';
+        lastTier = p.tier;
+      }
+      const s = sold.get(p.player_id);
+      const gone = greySold && s;
+      html += '<tr' + (gone ? ' style="opacity:.42"' : '') + '>' +
+        '<td><span class="box"></span></td>' +
+        '<td class="nm">' + esc(p.name) +
+          (keepers.has(p.player_id) ? ' <span class="tm">(keeper)</span>' : '') + '</td>' +
+        '<td class="tm">' + esc(p.team) + '</td>' +
+        '<td class="num tm">' + (p.bye == null ? '&ndash;' : p.bye) + '</td>' +
+        '<td class="num">' + Math.round(p.points || 0) + '</td>' +
+        '<td class="num">' + Math.round(p.vorp || 0) + '</td>' +
+        '<td class="num tm">' + (p.adp == null ? '&ndash;' : (+p.adp).toFixed(1)) + '</td>' +
+        '<td class="tgt">' + money(p.auction_value) + '</td>' +
+        '<td class="max">' + money(p.max_bid) + '</td>' +
+        '<td class="' + (p.injury_risk === 'high' ? 'risk-high' : 'tm') + '">' +
+          esc(p.injury_risk || '') + '</td>' +
+        '<td class="tm">' + (s ? '$' + s.price + (s.mine ? ' &#9733;' : '') : '') + '</td></tr>';
+    }
+    html += '</tbody></table></div>';
+    first = false;
+  }
+
+  // ---- endgame: who you take once the money is gone
+  html += '<div class="pos-sec"><h2>$1 endgame</h2><div class="sub" style="margin-bottom:5px">' +
+    'Best available at each position once your budget is spent. These picks decide a roster&rsquo;s floor.</div>';
+  for (const pos of ORDER) {
+    const cheap = (byPos[pos] || []).filter(p => Math.round(p.auction_value) <= 2).slice(0, 12);
+    if (!cheap.length) continue;
+    html += '<div class="dollar-strip"><b>' + pos + '</b> ' + cheap.map(p =>
+      esc(p.name) + ' <span class="tm">' + esc(p.team) + '</span>').join(' &middot; ') + '</div>';
+  }
+  html += '</div>';
+
+  html += '<div class="foot">Every dollar on this sheet depends on the league settings above (<b>' +
+    l.teams + ' teams &middot; $' + l.budget + ' &middot; ' + esc(presetName) +
+    '</b>). Change them on the main site and reprint. Built ' +
+    esc((META && META.last_fetch) || '') + '.</div>';
+
+  $('#sheet').innerHTML = html;
+  $('#status').textContent = rows.length + ' players valued';
+}
+
+async function boot() {
+  SAVED = loadState();
+  try {
+    META = await (await fetch('data/meta.json')).json();
+    const key = (SAVED.league && SAVED.league.scoring) || DEFAULTS.scoring;
+    const raw = await (await fetch('data/proj_' + key + '.json')).json();
+    BOARD = raw.players || raw;
+  } catch (e) {
+    $('#sheet').innerHTML = '<p>Could not load the board. Open the main site first so the ' +
+      'passphrase is unlocked, then come back to this page.</p>';
+    $('#status').textContent = 'failed';
+    return;
+  }
+  $('#optSold').onchange = render;
+  $('#optDepth').onchange = render;
+  render();
+}
+(window.__gateReady || Promise.resolve()).then(boot);
+</script>
+</body>
+</html>

@@ -220,6 +220,16 @@ def build() -> int:
     html = (BASE_DIR / "templates" / "index.html").read_text(encoding="utf-8")
     html = html.replace("{{ season }}", str(SEASON)).replace("/static/", "")
     (DOCS / "index.html").write_text(html, encoding="utf-8")
+
+    # The printable auction sheet is a second entry point onto the same payload:
+    # it loads gate.js and engine.js exactly as index.html does, so it works on
+    # an encrypted build without any special handling here.
+    auc = BASE_DIR / "templates" / "auction_print.html"
+    if auc.exists():
+        (DOCS / "auction.html").write_text(
+            auc.read_text(encoding="utf-8").replace("/static/", ""), encoding="utf-8")
+    else:
+        print("  ! missing templates/auction_print.html")
     for name in ("style.css", "app.js", "engine.js", "gate.js"):
         src = BASE_DIR / "static" / name
         if src.exists():

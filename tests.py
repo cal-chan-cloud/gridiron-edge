@@ -762,6 +762,35 @@ process.stdout.write(JSON.stringify({{bands: out.bands, strong: slim(out.strong)
     check("risk share is a fraction", 0 <= d["strong"]["riskShare"] <= 1)
 
 
+def test_auction_sheet():
+    """The printable auction sheet must agree with the site it was printed from.
+
+    Delegated to node because the page renders itself as an HTML string; the JS
+    harness stubs a DOM, runs the page's own render(), and asserts on the markup.
+    """
+    import shutil
+    import subprocess
+    section("15. PRINTABLE AUCTION SHEET")
+
+    node = shutil.which("node")
+    sheet = BASE_DIR / "docs" / "auction.html"
+    if not node or not sheet.exists():
+        check("node + built sheet available", False, "skipped")
+        return
+    r = subprocess.run([node, str(BASE_DIR / "tests_auction_sheet.js"), str(BASE_DIR)],
+                       capture_output=True, text=True, timeout=300)
+    for line in r.stdout.splitlines():
+        line = line.strip()
+        if line.startswith("ok "):
+            check(line[3:].split("  [")[0], True,
+                  line.split("  [")[1].rstrip("]") if "  [" in line else "")
+        elif line.startswith("FAIL "):
+            check(line[5:].split("  [")[0], False,
+                  line.split("  [")[1].rstrip("]") if "  [" in line else "")
+    if r.returncode != 0 and "FAIL" not in r.stdout:
+        check("auction sheet harness ran", False, (r.stderr or r.stdout).strip()[:200])
+
+
 def test_backtest_accuracy():
     """Guard the measured accuracy of the model against silent regression.
 
@@ -827,6 +856,7 @@ def main():
         test_coaching(conn, ctx)
     test_js_parity()
     test_team_analysis()
+    test_auction_sheet()
     test_backtest_accuracy()
 
     print(f"\n{'=' * 72}")
